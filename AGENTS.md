@@ -50,6 +50,26 @@ Russian billiards table, 15 white target balls + 1 cue ball.
 
 **Win condition:** Balls only. When a player reaches targetBalls, a banner appears. The game does NOT auto-finish — other players can continue pocketing balls. Press **«Завершить партию»** to finalize. Final scores are recorded at that moment.
 
+### Golden Ball phase
+
+Triggered when the sum of all players' `balls` equals **14** (one target ball remains on table, plus the cue ball).
+
+**Свояк** (cue ball pocketed) counts as a regular ball. In the golden phase, «Золотые штаны» = pocket the last target ball + свояк in one shot.
+
+In the UI, regular action buttons are replaced by golden buttons. After any golden pocket (total ≥ 15), all action buttons hide and «Завершить партию» is shown.
+
+**Scoring** (N = number of players in the game):
+
+| Event | Balls | Points to current | Points to prev | Points to each remaining |
+|---|---|---|---|---|
+| Золотой шар (golden_regular) | +1 | +N | −2 | −1 |
+| Золотой дуплет (golden_duplet) | +1 | +N+1 | −3 | −1 |
+| Золотые штаны (golden_pants) | +2 | +N+2 | −4 | −1 |
+
+Zero-sum proof at N players: N − 2 − (N−2)×1 = 0 ✓
+
+«Штраф» and «Промах» remain available in golden phase.
+
 ---
 
 ## Data model
@@ -101,18 +121,38 @@ Located in `public/app.js`. Replays all events from scratch each time (no increm
 ```
 scores = { playerId: { balls: 0, points: 0, duraks: 0 } }
 turnIdx = 0
+n = game.players.length
+
 for each event:
   def = EVENT_DEFS[event.type]
-  apply def.balls and def.points to current player
-  if def.prevDelta != 0 and n > 1:
-    prevIdx = (currentIdx - 1 + n) % n
-    scores[prevPlayer].points += def.prevDelta
-  turnIdx = def.keepTurn ? currentIdx : (currentIdx + 1) % n
+
+  if def.isGolden:
+    tier = def.goldenTier  # 0, 1, or 2
+    scores[current].balls += def.balls
+    scores[current].points += n + tier
+    scores[prev].points -= 2 + tier
+    for each other player (not current, not prev):
+      scores[other].points -= 1
+    turnIdx = currentIdx  # keepTurn
+  else:
+    apply def.balls and def.points to current player
+    if def.prevDelta != 0 and n > 1:
+      prevIdx = (currentIdx - 1 + n) % n
+      scores[prevPlayer].points += def.prevDelta
+    turnIdx = def.keepTurn ? currentIdx : (currentIdx + 1) % n
+
 winner = first player where balls >= targetBalls
 pointsLeader = player with max points (null if tie)
+totalBalls = sum of all scores[p].balls
+isGoldenPhase = (totalBalls === 14)
+allBallsGone = (totalBalls >= 15)
 ```
 
 `set_turn` events override turnIdx manually (keepTurn=true, no scoring).
+
+**Golden phase UI logic:**
+- `isGoldenPhase`: replace action grid with golden buttons
+- `allBallsGone`: hide all action buttons, show «Завершить партию» only
 
 ---
 

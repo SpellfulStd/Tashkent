@@ -15,13 +15,17 @@ const api = {
 
 // balls — счётчик победы; points — очки текущему; prevDelta — что прилетает предыдущему игроку (последнему забившему)
 const EVENT_DEFS = {
-  pocket_regular: { label: 'Обычный', balls: 1, points: 1, prevDelta: -1, keepTurn: true,  isPocket: true,  isDurak: false },
-  pocket_duplet:  { label: 'Дуплет',   balls: 1, points: 2, prevDelta: -2, keepTurn: true,  isPocket: true,  isDurak: false },
-  pocket_pants:   { label: 'Штаны',    balls: 2, points: 3, prevDelta: -3, keepTurn: true,  isPocket: true,  isDurak: false },
-  pocket_durak:   { label: 'Дурак',    balls: 1, points: 1, prevDelta: -1, keepTurn: true,  isPocket: true,  isDurak: true  },
-  penalty:        { label: 'Штраф',    balls: 0, points: -1, prevDelta: 1, keepTurn: false, isPocket: false, isDurak: false },
-  miss:           { label: 'Промах',   balls: 0, points: 0, prevDelta: 0, keepTurn: false, isPocket: false, isDurak: false },
-  set_turn:       { label: 'Передача хода', balls: 0, points: 0, prevDelta: 0, keepTurn: true, isPocket: false, isDurak: false },
+  pocket_regular: { label: 'Обычный',       balls: 1, points: 1,  prevDelta: -1, keepTurn: true,  isPocket: true,  isDurak: false, isGolden: false },
+  pocket_duplet:  { label: 'Дуплет',        balls: 1, points: 2,  prevDelta: -2, keepTurn: true,  isPocket: true,  isDurak: false, isGolden: false },
+  pocket_pants:   { label: 'Штаны',         balls: 2, points: 3,  prevDelta: -3, keepTurn: true,  isPocket: true,  isDurak: false, isGolden: false },
+  pocket_durak:   { label: 'Дурак',         balls: 1, points: 1,  prevDelta: -1, keepTurn: true,  isPocket: true,  isDurak: true,  isGolden: false },
+  penalty:        { label: 'Штраф',         balls: 0, points: -1, prevDelta:  1, keepTurn: false, isPocket: false, isDurak: false, isGolden: false },
+  miss:           { label: 'Промах',        balls: 0, points: 0,  prevDelta:  0, keepTurn: false, isPocket: false, isDurak: false, isGolden: false },
+  set_turn:       { label: 'Передача хода', balls: 0, points: 0,  prevDelta:  0, keepTurn: true,  isPocket: false, isDurak: false, isGolden: false },
+  // Golden ball events — points computed dynamically based on player count (N+tier)
+  golden_regular: { label: '🥇 Золотой шар',    balls: 1, points: 0, prevDelta: 0, keepTurn: true, isPocket: true,  isDurak: false, isGolden: true, goldenTier: 0 },
+  golden_duplet:  { label: '🥇 Золотой дуплет', balls: 1, points: 0, prevDelta: 0, keepTurn: true, isPocket: true,  isDurak: false, isGolden: true, goldenTier: 1 },
+  golden_pants:   { label: '🥇 Золотые штаны',  balls: 2, points: 0, prevDelta: 0, keepTurn: true, isPocket: true,  isDurak: false, isGolden: true, goldenTier: 2 },
 };
 
 function fmtDate(iso) {
@@ -50,14 +54,30 @@ function computeState(game) {
     const idx = game.players.findIndex((p) => p.id === ev.playerId);
     if (idx < 0) continue;
     const s = scores[ev.playerId];
-    s.balls = Math.max(0, s.balls + def.balls);
-    s.points = s.points + def.points;
-    if (def.isDurak) s.duraks += 1;
-    if (def.prevDelta && n > 1) {
-      const prevId = game.players[prevIndex(idx, n)].id;
-      if (prevId !== ev.playerId) scores[prevId].points += def.prevDelta;
+    if (def.isGolden) {
+      // Points: +N+tier to current; -(2+tier) to prev; -1 to each remaining
+      const pts = n + def.goldenTier;
+      const prevPts = -(2 + def.goldenTier);
+      s.balls += def.balls;
+      s.points += pts;
+      if (n > 1) {
+        const prevId = game.players[prevIndex(idx, n)].id;
+        scores[prevId].points += prevPts;
+        game.players.forEach((p) => {
+          if (p.id !== ev.playerId && p.id !== prevId) scores[p.id].points -= 1;
+        });
+      }
+      turnIdx = idx;
+    } else {
+      s.balls = Math.max(0, s.balls + def.balls);
+      s.points = s.points + def.points;
+      if (def.isDurak) s.duraks += 1;
+      if (def.prevDelta && n > 1) {
+        const prevId = game.players[prevIndex(idx, n)].id;
+        if (prevId !== ev.playerId) scores[prevId].points += def.prevDelta;
+      }
+      turnIdx = def.keepTurn ? idx : (idx + 1) % n;
     }
-    turnIdx = def.keepTurn ? idx : (idx + 1) % n;
   }
   const winner = game.players.find((p) => scores[p.id].balls >= game.targetBalls) || null;
   let pointsLeader = null;
@@ -527,9 +547,13 @@ async function renderLiveGame(match) {
 
   function render() {
     const st = computeState(game);
+    const n = game.players.length;
     const isFinished = game.status === 'finished';
     const prevName = st.prevPlayer ? st.prevPlayer.name : null;
     const firstWinner = game.firstWinnerId ? game.players.find((p) => p.id === game.firstWinnerId) : null;
+    const totalBalls = game.players.reduce((sum, p) => sum + st.scores[p.id].balls, 0);
+    const isGoldenPhase = totalBalls === 14;
+    const allBallsGone = totalBalls >= 15;
 
     app.innerHTML = `
       <a href="${game.seriesId ? '#/series/' + game.seriesId : '#/'}" class="muted">← ${game.seriesId ? 'В серию' : 'Главная'}</a>
@@ -538,11 +562,17 @@ async function renderLiveGame(match) {
         <span class="muted">до ${game.targetBalls} · ${fmtDate(game.createdAt)}</span>
       </div>
 
-      ${!isFinished && firstWinner ? `
+      ${!isFinished && (firstWinner || allBallsGone) ? `
         <div class="card" style="border:2px solid #4a9a4a; margin-bottom:12px; padding:14px 16px;">
-          <div style="font-size:17px; font-weight:700; margin-bottom:6px;">🏆 ${firstWinner.name} набрал ${game.targetBalls} шаров!</div>
-          <p class="muted" style="margin:0 0 12px; font-size:13px;">Игра продолжается — можно добить оставшиеся шары.</p>
+          ${firstWinner ? `<div style="font-size:17px; font-weight:700; margin-bottom:6px;">🏆 ${firstWinner.name} набрал ${game.targetBalls} шаров!</div>` : ''}
+          <p class="muted" style="margin:0 0 12px; font-size:13px;">${allBallsGone ? 'Все шары забиты.' : 'Игра продолжается — можно добить оставшиеся шары.'}</p>
           <button id="finishBtn">Завершить партию</button>
+        </div>
+      ` : ''}
+
+      ${!isFinished && isGoldenPhase ? `
+        <div class="card" style="border:2px solid #c9a227; margin-bottom:12px; padding:10px 14px; background:rgba(201,162,39,0.07);">
+          <div style="font-size:14px; font-weight:700; color:#c9a227; margin-bottom:4px;">🥇 ЗОЛОТОЙ ШАР — последний прицельный на столе!</div>
         </div>
       ` : ''}
 
@@ -577,17 +607,28 @@ async function renderLiveGame(match) {
 
       ${isFinished ? '' : `
         <p class="muted" style="font-size:12px; margin:-4px 0 10px;">Тапни по игроку, чтобы передать ему ход.</p>
-        <div class="action-grid">
-          <button data-ev="pocket_regular">Обычный<span class="hint">+1ш +1о / пред. −1о</span></button>
-          <button data-ev="pocket_durak">Дурак<span class="hint">+1ш +1о / пред. −1о</span></button>
-          <button data-ev="pocket_duplet">Дуплет<span class="hint">+1ш +2о / пред. −2о</span></button>
-          <button data-ev="pocket_pants">Штаны<span class="hint">+2ш +3о / пред. −3о</span></button>
-          <button data-ev="penalty" class="danger" style="grid-column: 1 / -1;">Штраф<span class="hint">−1о текущему, +1о предыдущему, ход переходит</span></button>
-        </div>
+
+        ${isGoldenPhase ? `
+          <div class="action-grid">
+            <button data-ev="golden_regular" style="grid-column: 1 / -1;">🥇 Золотой шар<span class="hint">+1ш +${n}о / пред. −2о / ост. −1о</span></button>
+            <button data-ev="golden_duplet">🥇 Золотой дуплет<span class="hint">+1ш +${n+1}о / пред. −3о / ост. −1о</span></button>
+            <button data-ev="golden_pants">🥇 Золотые штаны<span class="hint">+2ш +${n+2}о / пред. −4о / ост. −1о</span></button>
+            <button data-ev="penalty" class="danger">Штраф<span class="hint">−1о текущему, +1о предыдущему</span></button>
+            <button data-ev="miss" class="ghost">Промах</button>
+          </div>
+        ` : allBallsGone ? '' : `
+          <div class="action-grid">
+            <button data-ev="pocket_regular">Обычный<span class="hint">+1ш +1о / пред. −1о</span></button>
+            <button data-ev="pocket_durak">Дурак<span class="hint">+1ш +1о / пред. −1о</span></button>
+            <button data-ev="pocket_duplet">Дуплет<span class="hint">+1ш +2о / пред. −2о</span></button>
+            <button data-ev="pocket_pants">Штаны<span class="hint">+2ш +3о / пред. −3о</span></button>
+            <button data-ev="penalty" class="danger" style="grid-column: 1 / -1;">Штраф<span class="hint">−1о текущему, +1о предыдущему, ход переходит</span></button>
+          </div>
+        `}
 
         <div style="display:flex; gap:8px; margin-top:14px;">
           <button class="ghost" id="undoBtn" ${game.events.length === 0 ? 'disabled' : ''}>↶ Отменить</button>
-          ${!firstWinner ? `<button class="ghost" id="endBtn">Завершить досрочно</button>` : ''}
+          ${!firstWinner && !isGoldenPhase && !allBallsGone ? `<button class="ghost" id="endBtn">Завершить досрочно</button>` : ''}
         </div>
       `}
 
@@ -598,8 +639,13 @@ async function renderLiveGame(match) {
             const p = game.players.find((x) => x.id === ev.playerId);
             const def = EVENT_DEFS[ev.type];
             const dParts = [];
-            if (def.balls) dParts.push(`${def.balls > 0 ? '+' : ''}${def.balls} ш`);
-            if (def.points) dParts.push(`${def.points > 0 ? '+' : ''}${def.points} о`);
+            if (def.isGolden) {
+              if (def.balls) dParts.push(`+${def.balls} ш`);
+              dParts.push(`+${n + def.goldenTier} о`);
+            } else {
+              if (def.balls) dParts.push(`${def.balls > 0 ? '+' : ''}${def.balls} ш`);
+              if (def.points) dParts.push(`${def.points > 0 ? '+' : ''}${def.points} о`);
+            }
             const delta = dParts.join(', ');
             return `<div class="item"><span class="who">${p ? p.name : '?'}</span><span class="what">${def.label}</span><span class="delta">${delta}</span></div>`;
           }).join('')}
@@ -687,8 +733,13 @@ async function renderGameDetail(match) {
           const p = game.players.find((x) => x.id === ev.playerId);
           const def = EVENT_DEFS[ev.type];
           const dParts = [];
-          if (def.balls) dParts.push(`${def.balls > 0 ? '+' : ''}${def.balls} ш`);
-          if (def.points) dParts.push(`${def.points > 0 ? '+' : ''}${def.points} о`);
+          if (def.isGolden) {
+            if (def.balls) dParts.push(`+${def.balls} ш`);
+            dParts.push(`+${game.players.length + def.goldenTier} о`);
+          } else {
+            if (def.balls) dParts.push(`${def.balls > 0 ? '+' : ''}${def.balls} ш`);
+            if (def.points) dParts.push(`${def.points > 0 ? '+' : ''}${def.points} о`);
+          }
           return `<div class="item"><span class="who">${p ? p.name : '?'}</span><span class="what">${def.label}</span><span class="delta">${dParts.join(', ')}</span></div>`;
         }).join('')}
     </div>
