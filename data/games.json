@@ -1,0 +1,388 @@
+[
+  {
+    "id": "274157a2-b53a-4e34-9430-8e67fa72e9eb",
+    "seriesId": "2689145b-11a3-4966-8a86-ee348cbe8586",
+    "createdAt": "2026-06-07T12:50:21.198Z",
+    "finishedAt": "2026-06-07T12:53:23.092Z",
+    "targetBalls": 6,
+    "players": [
+      {
+        "id": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "name": "Анатолий"
+      },
+      {
+        "id": "b973188d-9019-4ab3-a047-d979042c159e",
+        "name": "Виталий"
+      },
+      {
+        "id": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "name": "Михаил"
+      }
+    ],
+    "events": [
+      {
+        "type": "pocket_regular",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T12:50:26.552Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T12:50:29.132Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T12:50:30.499Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T12:50:54.487Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T12:50:55.967Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:50:58.616Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:51:01.302Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:51:03.271Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:51:04.567Z"
+      },
+      {
+        "type": "penalty",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:51:09.303Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:51:10.634Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T12:51:19.602Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T12:51:30.270Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T12:51:31.450Z"
+      },
+      {
+        "type": "penalty",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T12:51:33.781Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T12:51:35.688Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T12:51:36.752Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:51:40.738Z"
+      },
+      {
+        "type": "pocket_duplet",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:52:11.413Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:52:17.090Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T12:52:34.789Z"
+      },
+      {
+        "type": "penalty",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T12:52:39.991Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:52:44.430Z"
+      },
+      {
+        "type": "penalty",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:53:19.113Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:53:21.359Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:53:23.092Z"
+      }
+    ],
+    "finalScores": {
+      "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b": {
+        "balls": 5,
+        "points": -1,
+        "duraks": 0
+      },
+      "b973188d-9019-4ab3-a047-d979042c159e": {
+        "balls": 6,
+        "points": 4,
+        "duraks": 0
+      },
+      "c2b586c4-5388-4ff2-ada5-4e994c262bb7": {
+        "balls": 2,
+        "points": -3,
+        "duraks": 0
+      }
+    },
+    "winnerId": "b973188d-9019-4ab3-a047-d979042c159e",
+    "pointsLeaderId": "b973188d-9019-4ab3-a047-d979042c159e",
+    "status": "finished"
+  },
+  {
+    "id": "e239873d-7a53-42e3-856f-82e1c960d144",
+    "seriesId": "2689145b-11a3-4966-8a86-ee348cbe8586",
+    "createdAt": "2026-06-07T11:35:32.890Z",
+    "finishedAt": "2026-06-07T12:30:53.919Z",
+    "targetBalls": 6,
+    "players": [
+      {
+        "id": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "name": "Михаил"
+      },
+      {
+        "id": "b973188d-9019-4ab3-a047-d979042c159e",
+        "name": "Виталий"
+      },
+      {
+        "id": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "name": "Анатолий"
+      }
+    ],
+    "events": [
+      {
+        "type": "miss",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T11:35:42.289Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T11:35:45.872Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T11:52:41.533Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T11:52:43.929Z"
+      },
+      {
+        "type": "miss",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T11:52:48.245Z"
+      },
+      {
+        "type": "miss",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T11:53:16.648Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T11:53:21.913Z"
+      },
+      {
+        "type": "miss",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T11:53:48.334Z"
+      },
+      {
+        "type": "miss",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T11:53:49.765Z"
+      },
+      {
+        "type": "miss",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T11:54:25.908Z"
+      },
+      {
+        "type": "miss",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T11:54:27.283Z"
+      },
+      {
+        "type": "miss",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T11:56:20.528Z"
+      },
+      {
+        "type": "miss",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T11:56:22.276Z"
+      },
+      {
+        "type": "miss",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T11:56:24.758Z"
+      },
+      {
+        "type": "miss",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T11:56:34.044Z"
+      },
+      {
+        "type": "miss",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T11:57:18.977Z"
+      },
+      {
+        "type": "miss",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T11:57:54.156Z"
+      },
+      {
+        "type": "miss",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T11:57:55.601Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T11:59:46.524Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T11:59:47.606Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T11:59:48.506Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T12:04:43.961Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T12:04:46.260Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T12:10:05.212Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T12:10:19.229Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:13:41.903Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:13:42.750Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:15:14.766Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T12:18:01.324Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "c2b586c4-5388-4ff2-ada5-4e994c262bb7",
+        "ts": "2026-06-07T12:18:02.205Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T12:27:12.850Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b",
+        "ts": "2026-06-07T12:29:21.213Z"
+      },
+      {
+        "type": "set_turn",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:30:51.701Z"
+      },
+      {
+        "type": "pocket_regular",
+        "playerId": "b973188d-9019-4ab3-a047-d979042c159e",
+        "ts": "2026-06-07T12:30:53.919Z"
+      }
+    ],
+    "finalScores": {
+      "c2b586c4-5388-4ff2-ada5-4e994c262bb7": {
+        "balls": 3,
+        "points": -3,
+        "duraks": 0
+      },
+      "b973188d-9019-4ab3-a047-d979042c159e": {
+        "balls": 6,
+        "points": 4,
+        "duraks": 0
+      },
+      "7ddf5da8-1c7e-44d5-99f9-81d1df61df1b": {
+        "balls": 2,
+        "points": -1,
+        "duraks": 0
+      }
+    },
+    "winnerId": "b973188d-9019-4ab3-a047-d979042c159e",
+    "status": "finished",
+    "pointsLeaderId": "b973188d-9019-4ab3-a047-d979042c159e"
+  }
+]
