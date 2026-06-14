@@ -143,6 +143,10 @@ main {
   padding: 18px 0 88px;
 }
 
+main:has(.live-game) {
+  padding-top: 10px;
+}
+
 .site-footer {
   width: min(100% - 28px, 980px);
   display: flex;
@@ -907,32 +911,33 @@ label {
 }
 
 .action-grid {
+  --action-size: clamp(52px, 14vw, 64px);
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 10px;
-  margin-top: 14px;
+  grid-template-columns: repeat(5, var(--action-size));
+  justify-content: center;
+  gap: clamp(6px, 1.8vw, 8px);
+  margin-top: 10px;
+}
+
+.action-grid-golden {
+  grid-template-columns: repeat(4, var(--action-size));
 }
 
 .action-grid button {
-  min-height: 74px;
-  flex-direction: column;
-  gap: 4px;
-  padding: 14px 12px;
+  width: var(--action-size);
+  height: var(--action-size);
+  min-height: 0;
+  flex-direction: row;
+  gap: 0;
+  padding: 0;
+  border-radius: 50%;
+  font-size: clamp(17px, 4.3vw, 22px);
+  line-height: 1;
   text-align: center;
 }
 
 .action-grid .hint {
-  color: rgba(6, 17, 28, 0.74);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.action-grid button.ghost .hint {
-  color: var(--muted);
-}
-
-.action-grid button.danger .hint {
-  color: rgba(255, 255, 255, 0.82);
+  display: none;
 }
 
 .game-actions {
@@ -1295,10 +1300,163 @@ table.totals th:not(:first-child) {
 
 .live-top {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  margin-bottom: 6px;
+}
+
+.live-top h1 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.05;
+}
+
+.live-title {
+  min-width: 0;
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  text-align: right;
+}
+
+.live-title .muted {
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.live-back {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.live-game .notice {
+  margin-bottom: 8px;
+  padding: 10px 12px;
+}
+
+.live-game .notice p {
+  margin-top: 2px;
+}
+
+.live-game .live-view-switch {
+  margin: 4px 0 8px;
+  padding: 3px;
+}
+
+.live-game .live-view-switch button {
+  min-height: 30px;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.live-game .score-sheet {
+  margin-bottom: 8px;
+}
+
+.live-game .score-sheet th,
+.live-game .score-sheet td {
+  padding: 5px 4px;
+}
+
+.live-game .sheet-player-head {
+  min-height: 44px;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 8px;
+}
+
+.live-game .sheet-initial {
+  font-size: 19px;
+}
+
+.live-game .sheet-crown {
+  top: -12px;
+  right: -15px;
+  font-size: 12px;
+}
+
+.live-game .sheet-balls {
+  font-size: 11px;
+}
+
+.live-game .sheet-column-marks {
+  min-height: 78px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.live-game .sheet-mark {
+  width: 22px;
+  height: 22px;
+  font-size: 15px;
+}
+
+.live-game .sheet-total {
+  font-size: 16px;
+}
+
+.live-game .score-sheet-caption {
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
+.live-game .score-sheet-caption .sheet-mark {
+  width: 18px;
+  height: 18px;
+  font-size: 12px;
+}
+
+.live-game #playersWrap {
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.live-game .player-card {
+  padding: 10px;
+  border-radius: 12px;
+}
+
+.live-game .player-card .head {
+  margin-bottom: 4px;
+}
+
+.live-game .player-card .name {
+  font-size: 15px;
+}
+
+.live-game .player-card .stats {
+  gap: 9px;
+}
+
+.live-game .player-card .balls {
+  font-size: 24px;
+}
+
+.live-game .player-card .balls .target {
+  font-size: 13px;
+}
+
+.live-game .player-card .points,
+.live-game .duraks {
+  font-size: 12px;
+}
+
+.live-game .turn-badge {
+  padding: 3px 7px;
+  font-size: 10px;
+}
+
+.live-game .game-actions {
+  margin-top: 10px;
+}
+
+.live-game h2 {
+  margin: 16px 0 8px;
+  font-size: 18px;
 }
 
 .danger-zone {
@@ -1421,14 +1579,6 @@ dialog.win-screen .winner {
 
   #playersWrap {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .action-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .action-grid .wide {
-    grid-column: 1 / -1;
   }
 
   .player-admin {

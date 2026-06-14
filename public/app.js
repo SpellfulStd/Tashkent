@@ -1702,14 +1702,6 @@ async function renderLiveGame(match, token) {
     await postGameEvent('set_turn', playerId);
   }
 
-  async function passTurn() {
-    const st = computeState(game);
-    const currentPlayer = game.players[st.turnIdx];
-    const nextPlayer = game.players[(st.turnIdx + 1) % game.players.length];
-    if (!currentPlayer || !nextPlayer || currentPlayer.id === nextPlayer.id) return;
-    await postGameEvent('set_turn', nextPlayer.id);
-  }
-
   async function undoLast() {
     if (!game.events || game.events.length === 0) return;
     const events = game.events.slice(0, -1);
@@ -1774,7 +1766,6 @@ async function renderLiveGame(match, token) {
     const access = accessForGame(game);
     const canControl = access.canControl;
     const isFinished = game.status === 'finished';
-    const prevName = st.prevPlayer ? st.prevPlayer.name : null;
     const firstWinner = st.firstWinner || (game.winnerId ? game.players.find((p) => p.id === game.winnerId) : null);
     const shownEvents = visibleEvents(game);
     const liveView = getLiveGameView();
@@ -1783,90 +1774,87 @@ async function renderLiveGame(match, token) {
       : playerCardsHTML(game, st, { canControl, isFinished, firstWinner });
 
     app.innerHTML = `
-      <a href="${game.seriesId ? '#/series/' + esc(game.seriesId) : '#/'}" class="back-link">← ${game.seriesId ? 'В серию' : 'Главная'}</a>
-      <div class="live-top">
-        <h1>${isFinished ? 'Игра завершена' : 'Игра идёт'}</h1>
-        <span class="muted">до ${esc(game.targetBalls)} · ${fmtDate(game.createdAt)}</span>
+      <div class="live-game">
+        <div class="live-top">
+          <a href="${game.seriesId ? '#/series/' + esc(game.seriesId) : '#/'}" class="back-link live-back">← ${game.seriesId ? 'В серию' : 'Главная'}</a>
+          <div class="live-title">
+            <h1>${isFinished ? 'Игра завершена' : 'Игра идёт'}</h1>
+            <span class="muted">до ${esc(game.targetBalls)} · ${fmtDate(game.createdAt)}</span>
+          </div>
+        </div>
+
+        ${!isFinished && !canControl ? `
+          <div class="notice info">
+            <strong>Только просмотр</strong>
+            <p class="muted">${access.myPlayerId ? 'Вы не в составе этой игры.' : 'Ваш аккаунт не привязан к игроку в этой игре.'} Счёт обновляется автоматически.</p>
+          </div>
+        ` : ''}
+
+        ${!isFinished && (firstWinner || st.allBallsGone) ? `
+          <div class="notice success">
+            <div>
+              ${firstWinner ? `<strong>🏆 ${esc(firstWinner.name)} набрал ${esc(game.targetBalls)} шаров</strong>` : '<strong>Все шары забиты</strong>'}
+              <p class="muted">${st.allBallsGone ? 'Все шары забиты.' : 'Игра продолжается — можно добить оставшиеся шары.'}</p>
+            </div>
+            ${canControl ? '<button id="finishBtn">Завершить партию</button>' : '<span class="tag">ожидаем игрока</span>'}
+          </div>
+        ` : ''}
+
+        ${!isFinished && st.isGoldenPhase ? `
+          <div class="notice gold">
+            <strong>Золотой шар</strong>
+            <p class="muted">На столе остался последний прицельный шар.</p>
+          </div>
+        ` : ''}
+
+        ${liveViewSwitchHTML(liveView)}
+        ${scoreViewHTML}
+
+        ${!isFinished && canControl ? `
+          ${st.allBallsGone ? '' : st.isGoldenPhase ? `
+            <div class="action-grid action-grid-golden" aria-label="Действия">
+              <button data-ev="golden_regular" title="Золотой шар: +1 шар, +${n} очков; предыдущему −2; остальным −1" aria-label="Золотой шар">З</button>
+              <button data-ev="golden_duplet" title="Золотой дуплет: +1 шар, +${n + 1} очков; предыдущему −3; остальным −1" aria-label="Золотой дуплет">ЗД</button>
+              <button data-ev="golden_pants" title="Золотые штаны: +2 шара, +${n + 2} очков; предыдущему −4; остальным −1" aria-label="Золотые штаны">ЗШ</button>
+              <button data-ev="penalty" class="danger" title="Штраф: −1 очко текущему, +1 предыдущему; ход переходит дальше" aria-label="Штраф">Шт</button>
+            </div>
+          ` : `
+            <div class="action-grid action-grid-regular" aria-label="Действия">
+              <button data-ev="pocket_regular" title="Обычный: +1 шар, +1 очко; предыдущему −1" aria-label="Обычный">О</button>
+              <button data-ev="pocket_durak" title="Дурак: +1 шар, +1 очко; предыдущему −1" aria-label="Дурак">Д</button>
+              <button data-ev="pocket_duplet" title="Дуплет: +1 шар, +2 очка; предыдущему −2" aria-label="Дуплет">Дп</button>
+              <button data-ev="pocket_pants" title="Штаны: +2 шара, +3 очка; предыдущему −3" aria-label="Штаны">Ш</button>
+              <button data-ev="penalty" class="danger" title="Штраф: −1 очко текущему, +1 предыдущему; ход переходит дальше" aria-label="Штраф">Шт</button>
+            </div>
+          `}
+
+          <div class="game-actions">
+            <button class="ghost" id="undoBtn" ${(game.events || []).length === 0 ? 'disabled' : ''}>↶ Отменить</button>
+            ${!firstWinner && !st.isGoldenPhase && !st.allBallsGone ? '<button class="ghost" id="endBtn">Завершить досрочно</button>' : ''}
+          </div>
+        ` : ''}
+
+        <h2>Лог ходов (${shownEvents.length})</h2>
+        <div class="card event-log">${renderEventLog()}</div>
+
+        ${isFinished ? `
+          <dialog class="win-screen" id="winDlg">
+            <h2>🏆 Победа по шарам</h2>
+            <div class="winner">${esc((game.players.find((p) => p.id === game.winnerId) || {}).name || '')}</div>
+            ${game.pointsLeaderId && game.pointsLeaderId !== game.winnerId ? `
+              <p>🥇 Лидер по очкам: <strong>${esc((game.players.find((p) => p.id === game.pointsLeaderId) || {}).name || '')}</strong></p>
+            ` : ''}
+            <p class="muted">Игра сохранена.</p>
+            <div class="button-row">
+              ${game.seriesId ? '<button id="dlgSeriesBtn">К серии</button>' : ''}
+              <button class="ghost" id="dlgHomeBtn">На главную</button>
+            </div>
+          </dialog>
+        ` : ''}
       </div>
-
-      ${!isFinished && !canControl ? `
-        <div class="notice info">
-          <strong>Только просмотр</strong>
-          <p class="muted">${access.myPlayerId ? 'Вы не в составе этой игры.' : 'Ваш аккаунт не привязан к игроку в этой игре.'} Счёт обновляется автоматически.</p>
-        </div>
-      ` : ''}
-
-      ${!isFinished && (firstWinner || st.allBallsGone) ? `
-        <div class="notice success">
-          <div>
-            ${firstWinner ? `<strong>🏆 ${esc(firstWinner.name)} набрал ${esc(game.targetBalls)} шаров</strong>` : '<strong>Все шары забиты</strong>'}
-            <p class="muted">${st.allBallsGone ? 'Все шары забиты.' : 'Игра продолжается — можно добить оставшиеся шары.'}</p>
-          </div>
-          ${canControl ? '<button id="finishBtn">Завершить партию</button>' : '<span class="tag">ожидаем игрока</span>'}
-        </div>
-      ` : ''}
-
-      ${!isFinished && st.isGoldenPhase ? `
-        <div class="notice gold">
-          <strong>Золотой шар</strong>
-          <p class="muted">На столе остался последний прицельный шар.</p>
-        </div>
-      ` : ''}
-
-      ${!isFinished ? `<p class="muted">Минус/плюс полетит предыдущему игроку: <strong>${esc(prevName || '—')}</strong></p>` : ''}
-
-      ${liveViewSwitchHTML(liveView)}
-      ${scoreViewHTML}
-
-      ${!isFinished && canControl ? `
-        <p class="muted small-note">Тапни по игроку, чтобы передать ему ход.</p>
-
-        ${st.allBallsGone ? '' : st.isGoldenPhase ? `
-          <div class="action-grid">
-            <button data-ev="golden_regular" class="wide">Золотой шар<span class="hint">+1ш +${n}о / пред. −2о / ост. −1о</span></button>
-            <button data-ev="golden_duplet">Золотой дуплет<span class="hint">+1ш +${n + 1}о / пред. −3о / ост. −1о</span></button>
-            <button data-ev="golden_pants">Золотые штаны<span class="hint">+2ш +${n + 2}о / пред. −4о / ост. −1о</span></button>
-            <button data-ev="penalty" class="danger">Штраф<span class="hint">−1о текущему, +1о предыдущему</span></button>
-            <button data-pass-turn class="ghost">Передать ход<span class="hint">следующий игрок</span></button>
-          </div>
-        ` : `
-          <div class="action-grid">
-            <button data-ev="pocket_regular">Обычный<span class="hint">+1ш +1о / пред. −1о</span></button>
-            <button data-ev="pocket_durak">Дурак<span class="hint">+1ш +1о / пред. −1о</span></button>
-            <button data-ev="pocket_duplet">Дуплет<span class="hint">+1ш +2о / пред. −2о</span></button>
-            <button data-ev="pocket_pants">Штаны<span class="hint">+2ш +3о / пред. −3о</span></button>
-            <button data-ev="penalty" class="danger">Штраф<span class="hint">−1о текущему, +1о предыдущему</span></button>
-            <button data-pass-turn class="ghost">Передать ход<span class="hint">следующий игрок</span></button>
-          </div>
-        `}
-
-        <div class="game-actions">
-          <button class="ghost" id="undoBtn" ${(game.events || []).length === 0 ? 'disabled' : ''}>↶ Отменить</button>
-          ${!firstWinner && !st.isGoldenPhase && !st.allBallsGone ? '<button class="ghost" id="endBtn">Завершить досрочно</button>' : ''}
-        </div>
-      ` : ''}
-
-      <h2>Лог ходов (${shownEvents.length})</h2>
-      <div class="card event-log">${renderEventLog()}</div>
-
-      ${isFinished ? `
-        <dialog class="win-screen" id="winDlg">
-          <h2>🏆 Победа по шарам</h2>
-          <div class="winner">${esc((game.players.find((p) => p.id === game.winnerId) || {}).name || '')}</div>
-          ${game.pointsLeaderId && game.pointsLeaderId !== game.winnerId ? `
-            <p>🥇 Лидер по очкам: <strong>${esc((game.players.find((p) => p.id === game.pointsLeaderId) || {}).name || '')}</strong></p>
-          ` : ''}
-          <p class="muted">Игра сохранена.</p>
-          <div class="button-row">
-            ${game.seriesId ? '<button id="dlgSeriesBtn">К серии</button>' : ''}
-            <button class="ghost" id="dlgHomeBtn">На главную</button>
-          </div>
-        </dialog>
-      ` : ''}
     `;
 
     document.querySelectorAll('[data-ev]').forEach((b) => b.addEventListener('click', () => pushEvent(b.dataset.ev)));
-    document.querySelectorAll('[data-pass-turn]').forEach((b) => b.addEventListener('click', passTurn));
     document.querySelectorAll('[data-pick]').forEach((el) => el.addEventListener('click', () => setTurn(el.dataset.pick)));
     document.querySelectorAll('[data-live-view]').forEach((b) => b.addEventListener('click', () => {
       setLiveGameView(b.dataset.liveView);
