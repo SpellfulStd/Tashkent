@@ -436,6 +436,7 @@ function eventLogHTML(game, events = visibleEvents(game)) {
 }
 
 const LIVE_GAME_VIEW_KEY = 'tashkent.liveGameView';
+const GAME_DETAIL_VIEW_KEY = 'tashkent.gameDetailView';
 
 function getLiveGameView() {
   try {
@@ -448,6 +449,22 @@ function getLiveGameView() {
 function setLiveGameView(view) {
   try {
     localStorage.setItem(LIVE_GAME_VIEW_KEY, view === 'sheet' ? 'sheet' : 'cards');
+  } catch {
+    // localStorage can be unavailable in restrictive browser modes.
+  }
+}
+
+function getGameDetailView() {
+  try {
+    return localStorage.getItem(GAME_DETAIL_VIEW_KEY) === 'sheet' ? 'sheet' : 'cards';
+  } catch {
+    return 'cards';
+  }
+}
+
+function setGameDetailView(view) {
+  try {
+    localStorage.setItem(GAME_DETAIL_VIEW_KEY, view === 'sheet' ? 'sheet' : 'cards');
   } catch {
     // localStorage can be unavailable in restrictive browser modes.
   }
@@ -548,13 +565,21 @@ function uniqueBallsLeader(game, scores) {
   return leaders.length === 1 ? leaders[0] : null;
 }
 
-function liveViewSwitchHTML(activeView) {
+function scoreViewSwitchHTML(activeView, dataAttr, labels = { cards: 'Текущий', sheet: 'Столбцы' }) {
   return `
     <div class="live-view-switch" role="group" aria-label="Вид счёта">
-      <button type="button" data-live-view="cards" class="${activeView === 'cards' ? 'active' : ''}" aria-pressed="${activeView === 'cards'}">Текущий</button>
-      <button type="button" data-live-view="sheet" class="${activeView === 'sheet' ? 'active' : ''}" aria-pressed="${activeView === 'sheet'}">Столбцы</button>
+      <button type="button" ${dataAttr}="cards" class="${activeView === 'cards' ? 'active' : ''}" aria-pressed="${activeView === 'cards'}">${esc(labels.cards)}</button>
+      <button type="button" ${dataAttr}="sheet" class="${activeView === 'sheet' ? 'active' : ''}" aria-pressed="${activeView === 'sheet'}">${esc(labels.sheet)}</button>
     </div>
   `;
+}
+
+function liveViewSwitchHTML(activeView) {
+  return scoreViewSwitchHTML(activeView, 'data-live-view');
+}
+
+function gameDetailViewSwitchHTML(activeView) {
+  return scoreViewSwitchHTML(activeView, 'data-detail-view', { cards: 'Итоги', sheet: 'Столбцы' });
 }
 
 function playerCardsHTML(game, st, { canControl, isFinished, firstWinner }) {
@@ -647,6 +672,31 @@ function scoreSheetHTML(game, st, { canControl, isFinished }) {
           </tfoot>
         </table>
       </div>
+    </div>
+  `;
+}
+
+function gameDetailCardsHTML(game, detailScores, detailMutualPoints) {
+  return `
+    <div id="playersWrap">
+      ${game.players.map((p) => {
+        const s = detailScores[p.id];
+        const isWin = p.id === game.winnerId;
+        const isPL = p.id === game.pointsLeaderId;
+        return `
+          <div class="player-card ${isWin ? 'win' : ''}">
+            <div class="head">
+              <div class="name">${esc(p.name)}${isWin ? ' 🏆' : ''}${isPL && !isWin ? ' 🥇' : ''}</div>
+            </div>
+            <div class="stats">
+              <div class="balls">${s.balls}<span class="target">/${esc(game.targetBalls)}</span></div>
+              <div class="points">${signed(s.points)} очк.</div>
+              <div class="mutual-points">взаим. ${signed(detailMutualPoints[p.id] || 0)}</div>
+              ${s.duraks > 0 ? `<div class="duraks">🤡 ${s.duraks}</div>` : ''}
+            </div>
+          </div>
+        `;
+      }).join('')}
     </div>
   `;
 }
@@ -1687,6 +1737,11 @@ async function renderGameDetail(match) {
     detailScores[p.id] = (game.finalScores && game.finalScores[p.id]) || st.scores[p.id];
   });
   const detailMutualPoints = mutualPointsMap(game.players, (p) => detailScores[p.id].points);
+  const detailState = { ...st, scores: detailScores, mutualPoints: detailMutualPoints };
+  const detailView = getGameDetailView();
+  const scoreViewHTML = detailView === 'sheet'
+    ? scoreSheetHTML(game, detailState, { canControl: false, isFinished: true })
+    : gameDetailCardsHTML(game, detailScores, detailMutualPoints);
 
   app.innerHTML = `
     <a href="${game.seriesId ? '#/series/' + esc(game.seriesId) : '#/history'}" class="back-link">← Назад</a>
@@ -1694,26 +1749,8 @@ async function renderGameDetail(match) {
     ${pointsLeader && (!winner || pointsLeader.id !== winner.id) ? `<p>🥇 Лидер по очкам: <strong>${esc(pointsLeader.name)}</strong></p>` : ''}
     <p class="muted">${fmtDate(game.createdAt)} · до ${esc(game.targetBalls)} шаров ${duration ? '· ' + duration : ''}</p>
 
-    <div id="playersWrap">
-      ${game.players.map((p) => {
-        const s = detailScores[p.id];
-        const isWin = p.id === game.winnerId;
-        const isPL = p.id === game.pointsLeaderId;
-        return `
-          <div class="player-card ${isWin ? 'win' : ''}">
-            <div class="head">
-              <div class="name">${esc(p.name)}${isWin ? ' 🏆' : ''}${isPL && !isWin ? ' 🥇' : ''}</div>
-            </div>
-            <div class="stats">
-              <div class="balls">${s.balls}<span class="target">/${esc(game.targetBalls)}</span></div>
-              <div class="points">${signed(s.points)} очк.</div>
-              <div class="mutual-points">взаим. ${signed(detailMutualPoints[p.id] || 0)}</div>
-              ${s.duraks > 0 ? `<div class="duraks">🤡 ${s.duraks}</div>` : ''}
-            </div>
-          </div>
-        `;
-      }).join('')}
-    </div>
+    ${gameDetailViewSwitchHTML(detailView)}
+    ${scoreViewHTML}
 
     <h2>Лог ходов (${shownEvents.length})</h2>
     <div class="card event-log">
@@ -1724,6 +1761,10 @@ async function renderGameDetail(match) {
       <button class="ghost danger" id="delBtn">Удалить игру</button>
     </div>
   `;
+  document.querySelectorAll('[data-detail-view]').forEach((b) => b.addEventListener('click', () => {
+    setGameDetailView(b.dataset.detailView);
+    renderGameDetail(match);
+  }));
   document.getElementById('delBtn').addEventListener('click', async () => {
     if (!confirm('Удалить игру навсегда?')) return;
     await api.del(`/api/games/${id}`);
