@@ -13,6 +13,7 @@ const state = {
   reloadLiveGame: null,
   routeToken: 0,
   actionPending: false,
+  adminChatTimer: null,
 };
 
 const api = {
@@ -61,7 +62,7 @@ const EVENT_DEFS = {
   pocket_pants:   { label: 'Штаны',         balls: 2, points: 3,  prevDelta: -3, keepTurn: true,  isPocket: true,  isDurak: false, isGolden: false },
   pocket_durak:   { label: 'Дурак',         balls: 1, points: 1,  prevDelta: -1, keepTurn: true,  isPocket: true,  isDurak: true,  isGolden: false },
   penalty:        { label: 'Штраф',         balls: 0, points: -1, prevDelta:  1, keepTurn: false, isPocket: false, isDurak: false, isGolden: false },
-  miss:           { label: 'Промах',        balls: 0, points: 0,  prevDelta:  0, keepTurn: false, isPocket: false, isDurak: false, isGolden: false },
+  miss:           { label: 'Передача хода', balls: 0, points: 0,  prevDelta:  0, keepTurn: false, isPocket: false, isDurak: false, isGolden: false },
   set_turn:       { label: 'Передача хода', balls: 0, points: 0,  prevDelta:  0, keepTurn: true,  isPocket: false, isDurak: false, isGolden: false },
   golden_regular: { label: 'Золотой шар',    balls: 1, points: 0, prevDelta: 0, keepTurn: true, isPocket: true,  isDurak: false, isGolden: true, goldenTier: 0 },
   golden_duplet:  { label: 'Золотой дуплет', balls: 1, points: 0, prevDelta: 0, keepTurn: true, isPocket: true,  isDurak: false, isGolden: true, goldenTier: 1 },
@@ -265,6 +266,25 @@ function eventDelta(def, playerCount) {
   return parts.join(', ');
 }
 
+function visibleEvents(game) {
+  return (game.events || []).filter((ev) => ev.type !== 'miss');
+}
+
+function eventLogHTML(game, events = visibleEvents(game)) {
+  if (events.length === 0) return '<p class="empty-state">Пусто.</p>';
+  return [...events].reverse().map((ev) => {
+    const p = game.players.find((x) => x.id === ev.playerId);
+    const def = EVENT_DEFS[ev.type];
+    return `
+      <div class="item">
+        <span class="who">${esc(p ? p.name : '?')}</span>
+        <span class="what">${esc(def ? def.label : ev.type)}</span>
+        <span class="delta">${esc(eventDelta(def, game.players.length))}</span>
+      </div>
+    `;
+  }).join('');
+}
+
 function gameRowHTML(g) {
   const winner = g.winnerId ? g.players.find((p) => p.id === g.winnerId) : null;
   const pointsLeader = g.pointsLeaderId ? g.players.find((p) => p.id === g.pointsLeaderId) : null;
@@ -319,6 +339,14 @@ function updateUserHeader() {
   userNameEl.textContent = user ? (user.name || user.username || user.email || 'Аккаунт') : '—';
 }
 
+function currentPlayerFromMe() {
+  return state.me && state.me.player ? state.me.player : null;
+}
+
+function isDeveloperUser() {
+  return !!(state.me && state.me.user && state.me.user.username === 'spellful');
+}
+
 async function refreshSession() {
   state.me = await api.get('/api/me');
   updateUserHeader();
@@ -335,7 +363,8 @@ function isDefaultHash() {
 }
 
 function accessForGame(game) {
-  const myPlayerId = (state.active && state.active.myPlayerId) || (state.me && state.me.player && state.me.player.id) || null;
+  const mePlayer = currentPlayerFromMe();
+  const myPlayerId = (mePlayer && mePlayer.id) || (state.active && state.active.myPlayerId) || null;
   const inRoster = !!myPlayerId && game.players.some((p) => p.id === myPlayerId);
   const activeSaysAttached = state.active && state.active.game && state.active.game.id === game.id && state.active.attached;
   return {
@@ -403,6 +432,8 @@ const routes = [
 
 async function route() {
   const token = ++state.routeToken;
+  clearInterval(state.adminChatTimer);
+  state.adminChatTimer = null;
   state.currentGameId = null;
   state.reloadLiveGame = null;
   const hash = location.hash || '#/';
@@ -427,7 +458,108 @@ async function route() {
 window.addEventListener('hashchange', route);
 window.addEventListener('load', boot);
 
-async function renderHome() {
+function adminChatPanelHTML() {
+  if (!isDeveloperUser()) return '';
+  return `
+    <section class="card admin-chat" id="adminChatPanel">
+      <h2>Чат с разработчиком</h2>
+      <div class="admin-chat-composer">
+        <textarea id="adminChatPrompt" rows="3" placeholder="Опишите задачу для разработчика"></textarea>
+        <button id="adminChatSend" class="shrink">Отправить</button>
+      </div>
+      <div class="admin-chat-feed" id="adminChatFeed">
+        <p class="empty-state">Загрузка задач…</p>
+      </div>
+    </section>
+  `;
+}
+
+function normalizeAdminTasks(data) {
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.tasks)) return data.tasks;
+  return [];
+}
+
+function adminStatusLabel(status) {
+  return ({
+    pending: 'pending',
+    running: 'running',
+    done: 'done',
+    error: 'error',
+  })[status] || status || 'pending';
+}
+
+function adminTasksHTML(tasks) {
+  if (!tasks.length) return '<p class="empty-state">Задач пока нет.</p>';
+  return tasks.map((task) => {
+    const status = adminStatusLabel(task.status);
+    const statusClass = ['pending', 'running', 'done', 'error'].includes(status) ? status : 'pending';
+    const prompt = task.prompt || '';
+    const output = task.output || task.error || '';
+    return `
+      <article class="chat-task">
+        <div class="chat-line user">
+          <div class="chat-bubble">
+            <div class="chat-meta">Вы</div>
+            <div>${esc(prompt)}</div>
+          </div>
+        </div>
+        <div class="chat-line dev">
+          <div class="chat-bubble">
+            <div class="chat-meta">
+              <span class="status-tag ${statusClass}">${esc(status)}</span>
+            </div>
+            ${output ? `<pre class="chat-output">${esc(output)}</pre>` : '<p class="muted">Ответ ещё не готов.</p>'}
+          </div>
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+function setupAdminChat(token) {
+  const panel = document.getElementById('adminChatPanel');
+  if (!panel || !isDeveloperUser()) return;
+
+  const promptInput = document.getElementById('adminChatPrompt');
+  const sendBtn = document.getElementById('adminChatSend');
+  const feed = document.getElementById('adminChatFeed');
+
+  async function loadTasks() {
+    try {
+      const data = await api.get('/api/admin/tasks');
+      if (token !== state.routeToken) return;
+      feed.innerHTML = adminTasksHTML(normalizeAdminTasks(data));
+    } catch (err) {
+      if (token !== state.routeToken) return;
+      feed.innerHTML = `<p class="empty-state">Ошибка загрузки: ${esc(err.message)}</p>`;
+    }
+  }
+
+  async function sendPrompt() {
+    const prompt = promptInput.value.trim();
+    if (!prompt) return;
+    sendBtn.disabled = true;
+    try {
+      await api.post('/api/admin/chat', { prompt });
+      promptInput.value = '';
+      await loadTasks();
+    } catch (err) {
+      showToast(err.message || 'Не удалось отправить сообщение');
+    } finally {
+      sendBtn.disabled = false;
+    }
+  }
+
+  sendBtn.addEventListener('click', sendPrompt);
+  promptInput.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') sendPrompt();
+  });
+  loadTasks();
+  state.adminChatTimer = setInterval(loadTasks, 3000);
+}
+
+async function renderHome(_match, token = state.routeToken) {
   const [series, games] = await Promise.all([api.get('/api/series'), api.get('/api/games')]);
   const activeSeries = series.filter((s) => s.status === 'active');
   const finished = series.filter((s) => s.status === 'finished').slice(0, 5);
@@ -445,6 +577,8 @@ async function renderHome() {
         <a href="#/history" class="btn ghost">История</a>
       </div>
     </section>
+
+    ${adminChatPanelHTML()}
 
     ${activeGame ? `
       <h2>Активная игра</h2>
@@ -474,11 +608,14 @@ async function renderHome() {
 
     ${series.length === 0 && orphanGames.length === 0 ? '<p class="empty-state">Пока ничего нет. Создай первую серию.</p>' : ''}
   `;
+  setupAdminChat(token);
 }
 
 async function renderPlayers() {
-  const [players, accounts, games] = await Promise.all([api.get('/api/players'), api.get('/api/accounts'), api.get('/api/games')]);
+  const [me, players, accounts, games] = await Promise.all([refreshSession(), api.get('/api/players'), api.get('/api/accounts'), api.get('/api/games')]);
   const stats = overallPlayerStats(players, games);
+  const myPlayer = me && me.player;
+  const mergeCandidates = myPlayer ? players.filter((p) => !p.accountSub && p.id !== myPlayer.id) : [];
 
   app.innerHTML = `
     <a href="#/" class="back-link">← Главная</a>
@@ -509,6 +646,21 @@ async function renderPlayers() {
         <input type="text" id="guestPlayerName" placeholder="Имя гостя" />
         <button id="addGuestBtn" class="shrink">Добавить гостя</button>
       </div>
+    </div>
+
+    <div class="card merge-card">
+      <h2>Мой профиль</h2>
+      ${myPlayer ? `
+        <p class="muted">Текущий игрок: <strong>${esc(myPlayer.name)}</strong></p>
+        <label for="mergeSource">Непривязанный игрок</label>
+        <div class="row merge-row">
+          <select id="mergeSource" ${mergeCandidates.length === 0 ? 'disabled' : ''}>
+            ${mergeCandidates.length === 0 ? '<option value="">Нет непривязанных игроков</option>' : mergeCandidates.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}${p.createdAt ? ' · ' + fmtDate(p.createdAt) : ''}</option>`).join('')}
+          </select>
+          <button id="mergePlayerBtn" class="shrink" ${mergeCandidates.length === 0 ? 'disabled' : ''}>Это тоже я / Объединить</button>
+        </div>
+        <p class="muted small-note">История выбранного гостя перейдёт в ваш профиль.</p>
+      ` : '<p class="muted">Ваш аккаунт пока не привязан к игроку.</p>'}
     </div>
 
     <h2>Все игроки (${players.length})</h2>
@@ -559,6 +711,7 @@ async function renderPlayers() {
   const guestInput = document.getElementById('guestPlayerName');
   const accountInput = document.getElementById('accountPlayerName');
   const accountSelect = document.getElementById('accountSelect');
+  const mergeBtn = document.getElementById('mergePlayerBtn');
 
   document.getElementById('addGuestBtn').addEventListener('click', async () => {
     const name = guestInput.value.trim();
@@ -580,6 +733,24 @@ async function renderPlayers() {
     await refreshSession();
     route();
   });
+
+  if (mergeBtn && myPlayer) {
+    mergeBtn.addEventListener('click', async () => {
+      const select = document.getElementById('mergeSource');
+      const sourceId = select ? select.value : '';
+      const source = mergeCandidates.find((p) => p.id === sourceId);
+      if (!sourceId) return;
+      if (!confirm(`Объединить историю игрока «${source ? source.name : 'выбранный игрок'}» с вашим профилем?`)) return;
+      try {
+        await api.post(`/api/players/${myPlayer.id}/merge`, { sourceId });
+        await Promise.all([refreshSession(), refreshActive()]);
+        showToast('История объединена');
+        route();
+      } catch (err) {
+        showToast(err.message || 'Не удалось объединить игроков');
+      }
+    });
+  }
 
   document.querySelectorAll('[data-bind]').forEach((b) => {
     b.addEventListener('click', async () => {
@@ -912,6 +1083,14 @@ async function renderLiveGame(match, token) {
     await postGameEvent('set_turn', playerId);
   }
 
+  async function passTurn() {
+    const st = computeState(game);
+    const currentPlayer = game.players[st.turnIdx];
+    const nextPlayer = game.players[(st.turnIdx + 1) % game.players.length];
+    if (!currentPlayer || !nextPlayer || currentPlayer.id === nextPlayer.id) return;
+    await postGameEvent('set_turn', nextPlayer.id);
+  }
+
   async function undoLast() {
     if (!game.events || game.events.length === 0) return;
     const events = game.events.slice(0, -1);
@@ -966,20 +1145,8 @@ async function renderLiveGame(match, token) {
     }
   }
 
-  function renderEventLog(st) {
-    const n = game.players.length;
-    if (!game.events || game.events.length === 0) return '<p class="empty-state">Пусто.</p>';
-    return [...game.events].reverse().map((ev) => {
-      const p = game.players.find((x) => x.id === ev.playerId);
-      const def = EVENT_DEFS[ev.type];
-      return `
-        <div class="item">
-          <span class="who">${esc(p ? p.name : '?')}</span>
-          <span class="what">${esc(def ? def.label : ev.type)}</span>
-          <span class="delta">${esc(eventDelta(def, n))}</span>
-        </div>
-      `;
-    }).join('');
+  function renderEventLog() {
+    return eventLogHTML(game);
   }
 
   function render() {
@@ -990,6 +1157,7 @@ async function renderLiveGame(match, token) {
     const isFinished = game.status === 'finished';
     const prevName = st.prevPlayer ? st.prevPlayer.name : null;
     const firstWinner = st.firstWinner || (game.winnerId ? game.players.find((p) => p.id === game.winnerId) : null);
+    const shownEvents = visibleEvents(game);
 
     app.innerHTML = `
       <a href="${game.seriesId ? '#/series/' + esc(game.seriesId) : '#/'}" class="back-link">← ${game.seriesId ? 'В серию' : 'Главная'}</a>
@@ -1060,7 +1228,7 @@ async function renderLiveGame(match, token) {
             <button data-ev="golden_duplet">Золотой дуплет<span class="hint">+1ш +${n + 1}о / пред. −3о / ост. −1о</span></button>
             <button data-ev="golden_pants">Золотые штаны<span class="hint">+2ш +${n + 2}о / пред. −4о / ост. −1о</span></button>
             <button data-ev="penalty" class="danger">Штраф<span class="hint">−1о текущему, +1о предыдущему</span></button>
-            <button data-ev="miss" class="ghost">Промах<span class="hint">ход переходит</span></button>
+            <button data-pass-turn class="ghost">Передать ход<span class="hint">следующий игрок</span></button>
           </div>
         ` : `
           <div class="action-grid">
@@ -1069,7 +1237,7 @@ async function renderLiveGame(match, token) {
             <button data-ev="pocket_duplet">Дуплет<span class="hint">+1ш +2о / пред. −2о</span></button>
             <button data-ev="pocket_pants">Штаны<span class="hint">+2ш +3о / пред. −3о</span></button>
             <button data-ev="penalty" class="danger">Штраф<span class="hint">−1о текущему, +1о предыдущему</span></button>
-            <button data-ev="miss" class="ghost">Промах<span class="hint">ход переходит</span></button>
+            <button data-pass-turn class="ghost">Передать ход<span class="hint">следующий игрок</span></button>
           </div>
         `}
 
@@ -1079,8 +1247,8 @@ async function renderLiveGame(match, token) {
         </div>
       ` : ''}
 
-      <h2>Лог ходов (${(game.events || []).length})</h2>
-      <div class="card event-log">${renderEventLog(st)}</div>
+      <h2>Лог ходов (${shownEvents.length})</h2>
+      <div class="card event-log">${renderEventLog()}</div>
 
       ${isFinished ? `
         <dialog class="win-screen" id="winDlg">
@@ -1099,6 +1267,7 @@ async function renderLiveGame(match, token) {
     `;
 
     document.querySelectorAll('[data-ev]').forEach((b) => b.addEventListener('click', () => pushEvent(b.dataset.ev)));
+    document.querySelectorAll('[data-pass-turn]').forEach((b) => b.addEventListener('click', passTurn));
     document.querySelectorAll('[data-pick]').forEach((el) => el.addEventListener('click', () => setTurn(el.dataset.pick)));
     const undoBtn = document.getElementById('undoBtn'); if (undoBtn) undoBtn.addEventListener('click', undoLast);
     const endBtn = document.getElementById('endBtn'); if (endBtn) endBtn.addEventListener('click', endGame);
@@ -1130,6 +1299,7 @@ async function renderGameDetail(match) {
   const winner = game.players.find((p) => p.id === game.winnerId);
   const pointsLeader = game.players.find((p) => p.id === game.pointsLeaderId);
   const duration = game.finishedAt ? fmtDuration(game.createdAt, game.finishedAt) : null;
+  const shownEvents = visibleEvents(game);
 
   app.innerHTML = `
     <a href="${game.seriesId ? '#/series/' + esc(game.seriesId) : '#/history'}" class="back-link">← Назад</a>
@@ -1157,20 +1327,9 @@ async function renderGameDetail(match) {
       }).join('')}
     </div>
 
-    <h2>Лог ходов (${(game.events || []).length})</h2>
+    <h2>Лог ходов (${shownEvents.length})</h2>
     <div class="card event-log">
-      ${(!game.events || game.events.length === 0) ? '<p class="empty-state">Пусто.</p>' :
-        [...game.events].reverse().map((ev) => {
-          const p = game.players.find((x) => x.id === ev.playerId);
-          const def = EVENT_DEFS[ev.type];
-          return `
-            <div class="item">
-              <span class="who">${esc(p ? p.name : '?')}</span>
-              <span class="what">${esc(def ? def.label : ev.type)}</span>
-              <span class="delta">${esc(eventDelta(def, game.players.length))}</span>
-            </div>
-          `;
-        }).join('')}
+      ${eventLogHTML(game, shownEvents)}
     </div>
 
     <div class="danger-zone">

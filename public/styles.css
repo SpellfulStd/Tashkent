@@ -293,7 +293,8 @@ button.small,
 
 input[type="text"],
 input[type="number"],
-select {
+select,
+textarea {
   width: 100%;
   min-height: 44px;
   padding: 10px 12px;
@@ -305,12 +306,18 @@ select {
   font-size: 15px;
 }
 
+textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
 select {
   cursor: pointer;
 }
 
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   border-color: var(--blue);
   outline: none;
   box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.14);
@@ -727,6 +734,113 @@ label {
   gap: 8px;
 }
 
+.merge-card .small-note {
+  margin: 8px 0 0;
+}
+
+.admin-chat {
+  border-color: rgba(56, 189, 248, 0.28);
+  background:
+    linear-gradient(135deg, rgba(8, 47, 73, 0.28), transparent 58%),
+    var(--panel);
+}
+
+.admin-chat h2 {
+  margin-top: 0;
+}
+
+.admin-chat-composer {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-chat-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 460px;
+  margin-top: 14px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.chat-task {
+  display: grid;
+  gap: 8px;
+}
+
+.chat-line {
+  display: flex;
+}
+
+.chat-line.user {
+  justify-content: flex-end;
+}
+
+.chat-line.dev {
+  justify-content: flex-start;
+}
+
+.chat-bubble {
+  max-width: min(100%, 720px);
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: var(--radius-sm);
+  color: var(--soft);
+  background: rgba(15, 23, 42, 0.62);
+}
+
+.chat-line.user .chat-bubble {
+  color: #dff6ff;
+  border-color: rgba(56, 189, 248, 0.36);
+  background: rgba(8, 47, 73, 0.44);
+}
+
+.chat-meta {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.chat-output {
+  margin: 8px 0 0;
+  padding: 10px;
+  overflow-x: auto;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 10px;
+  color: #dbeafe;
+  background: rgba(2, 6, 23, 0.62);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  white-space: pre-wrap;
+}
+
+.status-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(148, 163, 184, 0.14);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.status-tag.running {
+  color: #bbecff;
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.status-tag.done {
+  color: #bfffe2;
+  background: rgba(15, 122, 77, 0.24);
+}
+
+.status-tag.error {
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.24);
+}
+
 .table-scroll {
   overflow-x: auto;
 }
@@ -935,5 +1049,10 @@ dialog.win-screen .winner {
   .admin-actions {
     grid-template-columns: minmax(180px, 1fr) auto auto auto;
     align-items: center;
+  }
+
+  .admin-chat-composer {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
   }
 }
