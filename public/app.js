@@ -3,6 +3,7 @@
 const app = document.getElementById('app');
 const userNameEl = document.getElementById('userName');
 const toastEl = document.getElementById('toast');
+const DONATE_URL = 'https://pay.cloudtips.ru/p/b433613e';
 
 const state = {
   me: null,
@@ -85,7 +86,20 @@ function esc(value) {
   }[ch]));
 }
 
+function donateCTAHTML() {
+  return `
+    <section class="donate-cta" aria-label="Благодарность">
+      <div>
+        <h2>Понравился Ташкент?</h2>
+        <p>Поблагодарите за сервис — на развитие проекта</p>
+      </div>
+      <a class="btn donate-cta-btn" href="${DONATE_URL}" target="_blank" rel="noopener noreferrer">Поддержать</a>
+    </section>
+  `;
+}
+
 function signed(n) { return n > 0 ? `+${n}` : `${n}`; }
+function scoreTone(n) { return n > 0 ? 'score-positive' : n < 0 ? 'score-negative' : 'score-zero'; }
 function prevIndex(idx, n) { return (idx - 1 + n) % n; }
 function sameOrder(a, b) {
   return a.length === b.length && a.every((id, i) => id === b[i]);
@@ -511,8 +525,9 @@ function scoreSheetTotal(columns, playerId) {
 }
 
 function scoreSheetTotalHTML(points, sheetPoints) {
-  if (points === sheetPoints) return signed(points);
-  return `${signed(sheetPoints)} <span class="sheet-raw-total">(${signed(points)} всего)</span>`;
+  const sheetHTML = `<span class="score-value ${scoreTone(sheetPoints)}">${signed(sheetPoints)}</span>`;
+  if (points === sheetPoints) return sheetHTML;
+  return `${sheetHTML} <span class="sheet-raw-total ${scoreTone(points)}">(${signed(points)} всего)</span>`;
 }
 
 function scoreSheetHasSettledMarks(columns) {
@@ -616,7 +631,7 @@ function playerCardsHTML(game, st, { canControl, isFinished, firstWinner }) {
             </div>
             <div class="stats">
               <div class="balls">${s.balls}<span class="target">/${esc(game.targetBalls)}</span></div>
-              <div class="points">${signed(s.points)} очк.</div>
+              <div class="points ${scoreTone(s.points)}">${signed(s.points)} очк.</div>
               ${s.duraks > 0 ? `<div class="duraks">🤡 ${s.duraks}</div>` : ''}
             </div>
           </div>
@@ -703,7 +718,7 @@ function gameDetailCardsHTML(game, detailScores) {
             </div>
             <div class="stats">
               <div class="balls">${s.balls}<span class="target">/${esc(game.targetBalls)}</span></div>
-              <div class="points">${signed(s.points)} очк.</div>
+              <div class="points ${scoreTone(s.points)}">${signed(s.points)} очк.</div>
               ${s.duraks > 0 ? `<div class="duraks">🤡 ${s.duraks}</div>` : ''}
             </div>
           </div>
@@ -1298,7 +1313,7 @@ async function renderPlayers() {
                 <td>${t.gamesPlayed}</td>
                 <td>${t.wins}</td>
                 <td>${t.pointsLeads}</td>
-                <td>${signed(t.totalPoints)}</td>
+                <td class="score-value ${scoreTone(t.totalPoints)}">${signed(t.totalPoints)}</td>
                 <td>${t.totalBalls}</td>
                 <td>${t.totalDuraks}</td>
               </tr>
@@ -1440,7 +1455,7 @@ async function renderSeries(match) {
                 </td>
                 <td>${t.wins}</td>
                 <td>${t.pointsLeads}</td>
-                <td>${signed(t.totalPoints)}</td>
+                <td class="score-value ${scoreTone(t.totalPoints)}">${signed(t.totalPoints)}</td>
                 <td>${t.totalBalls}</td>
                 <td>${t.totalDuraks}</td>
               </tr>
@@ -1450,6 +1465,8 @@ async function renderSeries(match) {
         ${!isActive && (!winsChampion || !pointsChampion) ? '<p class="muted table-note">Где не выделен чемпион — ничья.</p>' : ''}
       </div>
     ` : ''}
+
+    ${!isActive ? donateCTAHTML() : ''}
 
     <h2>Игры в серии</h2>
     ${seriesGames.length === 0 ? '<p class="empty-state">Игр пока нет.</p>' :
@@ -1845,6 +1862,7 @@ async function renderLiveGame(match, token) {
               <p>🥇 Лидер по очкам: <strong>${esc((game.players.find((p) => p.id === game.pointsLeaderId) || {}).name || '')}</strong></p>
             ` : ''}
             <p class="muted">Игра сохранена.</p>
+            ${donateCTAHTML()}
             <div class="button-row">
               ${game.seriesId ? '<button id="dlgSeriesBtn">К серии</button>' : ''}
               <button class="ghost" id="dlgHomeBtn">На главную</button>
@@ -1920,6 +1938,8 @@ async function renderGameDetail(match) {
 
     ${gameDetailViewSwitchHTML(detailView)}
     ${scoreViewHTML}
+
+    ${game.status === 'finished' ? donateCTAHTML() : ''}
 
     <h2>Лог ходов (${shownEvents.length})</h2>
     <div class="card event-log">
