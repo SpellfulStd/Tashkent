@@ -668,15 +668,10 @@ label {
 }
 
 .player-card .points,
-.player-card .mutual-points,
 .duraks {
   color: var(--muted);
   font-size: 14px;
   font-weight: 700;
-}
-
-.player-card .mutual-points {
-  color: #bbecff;
 }
 
 .turn-badge {
@@ -828,7 +823,6 @@ label {
   align-items: center;
   justify-content: center;
   border: 1px solid transparent;
-  border-radius: 50%;
   font-size: 17px;
   font-weight: 900;
   line-height: 1;
@@ -836,17 +830,30 @@ label {
 
 .sheet-mark.plus {
   color: #bfffe2;
-  background: rgba(15, 122, 77, 0.2);
 }
 
 .sheet-mark.minus {
   color: #dbeafe;
+}
+
+.sheet-mark.settled {
+  border-color: currentColor;
+  border-radius: 50%;
+  opacity: 0.82;
+}
+
+.sheet-mark.plus.settled {
+  background: rgba(15, 122, 77, 0.2);
+}
+
+.sheet-mark.minus.settled {
   background: rgba(148, 163, 184, 0.12);
 }
 
 .sheet-mark.penalty {
   color: #fff;
   border-color: rgba(239, 68, 68, 0.68);
+  border-radius: 50%;
   background: rgba(127, 29, 29, 0.56);
 }
 
@@ -876,11 +883,27 @@ label {
   font-weight: 900;
 }
 
-.sheet-mutual {
-  margin-top: 2px;
+.sheet-raw-total {
   color: var(--muted);
   font-size: 11px;
   font-weight: 800;
+}
+
+.score-sheet-caption {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.score-sheet-caption .sheet-mark {
+  width: 20px;
+  height: 20px;
+  font-size: 13px;
 }
 
 .action-grid {

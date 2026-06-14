@@ -91,17 +91,6 @@ function sameOrder(a, b) {
   return a.length === b.length && a.every((id, i) => id === b[i]);
 }
 
-function mutualPointsMap(players, pointsFor) {
-  const total = players.reduce((sum, p) => sum + (Number(pointsFor(p)) || 0), 0);
-  const n = players.length;
-  const result = {};
-  players.forEach((p) => {
-    const points = Number(pointsFor(p)) || 0;
-    result[p.id] = points * n - total;
-  });
-  return result;
-}
-
 function shuffleCopy(items) {
   const arr = [...items];
   for (let i = arr.length - 1; i > 0; i--) {
@@ -329,7 +318,6 @@ function computeState(game) {
   const prevPlayer = n > 0 ? game.players[prevIndex(turnIdx, n)] : null;
   return {
     scores,
-    mutualPoints: mutualPointsMap(game.players, (p) => scores[p.id].points),
     turnIdx,
     winner,
     firstWinner,
@@ -346,13 +334,9 @@ function seriesTotals(series, games) {
   const finished = seriesGames.filter((g) => g.status === 'finished');
   const totals = new Map();
   for (const g of finished) {
-    const mutual = mutualPointsMap(g.players, (p) => {
-      const s = (g.finalScores && g.finalScores[p.id]) || { points: 0 };
-      return s.points;
-    });
     for (const p of g.players) {
       if (!totals.has(p.id)) {
-        totals.set(p.id, { id: p.id, name: p.name, wins: 0, pointsLeads: 0, totalPoints: 0, totalMutualPoints: 0, totalBalls: 0, totalDuraks: 0, gamesPlayed: 0 });
+        totals.set(p.id, { id: p.id, name: p.name, wins: 0, pointsLeads: 0, totalPoints: 0, totalBalls: 0, totalDuraks: 0, gamesPlayed: 0 });
       }
       const t = totals.get(p.id);
       t.gamesPlayed++;
@@ -360,7 +344,6 @@ function seriesTotals(series, games) {
       if (g.pointsLeaderId === p.id) t.pointsLeads++;
       const s = (g.finalScores && g.finalScores[p.id]) || { balls: 0, points: 0, duraks: 0 };
       t.totalPoints += s.points;
-      t.totalMutualPoints += mutual[p.id] || 0;
       t.totalBalls += s.balls;
       t.totalDuraks += s.duraks || 0;
     }
@@ -382,16 +365,12 @@ function seriesTotals(series, games) {
 function overallPlayerStats(players, games) {
   const totals = new Map();
   for (const p of players) {
-    totals.set(p.id, { id: p.id, name: p.name, gamesPlayed: 0, wins: 0, pointsLeads: 0, totalPoints: 0, totalMutualPoints: 0, totalBalls: 0, totalDuraks: 0 });
+    totals.set(p.id, { id: p.id, name: p.name, gamesPlayed: 0, wins: 0, pointsLeads: 0, totalPoints: 0, totalBalls: 0, totalDuraks: 0 });
   }
   for (const g of games.filter((x) => x.status === 'finished')) {
-    const mutual = mutualPointsMap(g.players, (p) => {
-      const s = (g.finalScores && g.finalScores[p.id]) || { points: 0 };
-      return s.points;
-    });
     for (const p of g.players) {
       if (!totals.has(p.id)) {
-        totals.set(p.id, { id: p.id, name: p.name, gamesPlayed: 0, wins: 0, pointsLeads: 0, totalPoints: 0, totalMutualPoints: 0, totalBalls: 0, totalDuraks: 0 });
+        totals.set(p.id, { id: p.id, name: p.name, gamesPlayed: 0, wins: 0, pointsLeads: 0, totalPoints: 0, totalBalls: 0, totalDuraks: 0 });
       }
       const t = totals.get(p.id);
       const s = (g.finalScores && g.finalScores[p.id]) || { balls: 0, points: 0, duraks: 0 };
@@ -399,7 +378,6 @@ function overallPlayerStats(players, games) {
       if (g.winnerId === p.id) t.wins++;
       if (g.pointsLeaderId === p.id) t.pointsLeads++;
       t.totalPoints += s.points;
-      t.totalMutualPoints += mutual[p.id] || 0;
       t.totalBalls += s.balls;
       t.totalDuraks += s.duraks || 0;
     }
@@ -446,9 +424,9 @@ const GAME_DETAIL_VIEW_KEY = 'tashkent.gameDetailView';
 
 function getLiveGameView() {
   try {
-    return localStorage.getItem(LIVE_GAME_VIEW_KEY) === 'sheet' ? 'sheet' : 'cards';
+    return localStorage.getItem(LIVE_GAME_VIEW_KEY) === 'cards' ? 'cards' : 'sheet';
   } catch {
-    return 'cards';
+    return 'sheet';
   }
 }
 
@@ -462,9 +440,9 @@ function setLiveGameView(view) {
 
 function getGameDetailView() {
   try {
-    return localStorage.getItem(GAME_DETAIL_VIEW_KEY) === 'sheet' ? 'sheet' : 'cards';
+    return localStorage.getItem(GAME_DETAIL_VIEW_KEY) === 'cards' ? 'cards' : 'sheet';
   } catch {
-    return 'cards';
+    return 'sheet';
   }
 }
 
@@ -516,12 +494,40 @@ function eventPointDeltas(game, ev) {
 }
 
 function appendScoreMark(marks, mark) {
-  const prev = marks[marks.length - 1];
-  if (prev && prev.sign !== mark.sign) {
-    marks.pop();
-    return;
+  for (let i = marks.length - 1; i >= 0; i--) {
+    if (!marks[i].settled && marks[i].sign !== mark.sign) {
+      marks[i].settled = true;
+      marks.push({ ...mark, settled: true });
+      return;
+    }
   }
   marks.push(mark);
+}
+
+function scoreSheetTotal(columns, playerId) {
+  return (columns[playerId] || []).reduce((sum, mark) => (
+    mark.settled ? sum : sum + mark.sign
+  ), 0);
+}
+
+function scoreSheetTotalHTML(points, sheetPoints) {
+  if (points === sheetPoints) return signed(points);
+  return `${signed(sheetPoints)} <span class="sheet-raw-total">(${signed(points)} всего)</span>`;
+}
+
+function scoreSheetHasSettledMarks(columns) {
+  return Object.values(columns).some((marks) => marks.some((mark) => mark.settled));
+}
+
+function scoreSheetCaptionHTML(hasSettled) {
+  if (!hasSettled) return '';
+  return `
+    <div class="score-sheet-caption">
+      <span class="sheet-mark plus settled"><span class="sheet-sign">+</span></span>
+      <span class="sheet-mark minus settled"><span class="sheet-sign">-</span></span>
+      <span class="muted">в кружке — зачтено</span>
+    </div>
+  `;
 }
 
 function buildScoreSheetColumns(game) {
@@ -548,6 +554,7 @@ function scoreMarkHTML(mark) {
   const classes = [
     'sheet-mark',
     mark.sign > 0 ? 'plus' : 'minus',
+    mark.settled ? 'settled' : '',
     mark.isPenalty ? 'penalty' : '',
   ].filter(Boolean).join(' ');
   return `
@@ -610,7 +617,6 @@ function playerCardsHTML(game, st, { canControl, isFinished, firstWinner }) {
             <div class="stats">
               <div class="balls">${s.balls}<span class="target">/${esc(game.targetBalls)}</span></div>
               <div class="points">${signed(s.points)} очк.</div>
-              <div class="mutual-points">взаим. ${signed(st.mutualPoints[p.id] || 0)}</div>
               ${s.duraks > 0 ? `<div class="duraks">🤡 ${s.duraks}</div>` : ''}
             </div>
           </div>
@@ -623,6 +629,7 @@ function playerCardsHTML(game, st, { canControl, isFinished, firstWinner }) {
 function scoreSheetHTML(game, st, { canControl, isFinished }) {
   const columns = buildScoreSheetColumns(game);
   const hasMarks = game.players.some((p) => columns[p.id] && columns[p.id].length);
+  const hasSettled = scoreSheetHasSettledMarks(columns);
   const leader = uniqueBallsLeader(game, st.scores);
   const currentPlayer = !isFinished ? game.players[st.turnIdx] : null;
   const colCount = game.players.length || 1;
@@ -670,19 +677,19 @@ function scoreSheetHTML(game, st, { canControl, isFinished }) {
             <tr>
               ${game.players.map((p) => `
                 <td class="sheet-total">
-                  <div>${signed(st.scores[p.id].points)}</div>
-                  <div class="sheet-mutual">вз. ${signed(st.mutualPoints[p.id] || 0)}</div>
+                  <div>${scoreSheetTotalHTML(st.scores[p.id].points, scoreSheetTotal(columns, p.id))}</div>
                 </td>
               `).join('')}
             </tr>
           </tfoot>
         </table>
       </div>
+      ${scoreSheetCaptionHTML(hasSettled)}
     </div>
   `;
 }
 
-function gameDetailCardsHTML(game, detailScores, detailMutualPoints) {
+function gameDetailCardsHTML(game, detailScores) {
   return `
     <div id="playersWrap">
       ${game.players.map((p) => {
@@ -697,7 +704,6 @@ function gameDetailCardsHTML(game, detailScores, detailMutualPoints) {
             <div class="stats">
               <div class="balls">${s.balls}<span class="target">/${esc(game.targetBalls)}</span></div>
               <div class="points">${signed(s.points)} очк.</div>
-              <div class="mutual-points">взаим. ${signed(detailMutualPoints[p.id] || 0)}</div>
               ${s.duraks > 0 ? `<div class="duraks">🤡 ${s.duraks}</div>` : ''}
             </div>
           </div>
@@ -1284,7 +1290,7 @@ async function renderPlayers() {
       <h2>Статистика игроков</h2>
       <div class="card totals-card table-scroll">
         <table class="totals">
-          <thead><tr><th>Игрок</th><th>Игр</th><th>Побед</th><th>Лидер по очкам</th><th>Очков</th><th>Взаимозачёт</th><th>Шаров</th><th>Дураков</th></tr></thead>
+          <thead><tr><th>Игрок</th><th>Игр</th><th>Побед</th><th>Лидер по очкам</th><th>Очков</th><th>Шаров</th><th>Дураков</th></tr></thead>
           <tbody>
             ${stats.map((t) => `
               <tr>
@@ -1293,7 +1299,6 @@ async function renderPlayers() {
                 <td>${t.wins}</td>
                 <td>${t.pointsLeads}</td>
                 <td>${signed(t.totalPoints)}</td>
-                <td>${signed(t.totalMutualPoints)}</td>
                 <td>${t.totalBalls}</td>
                 <td>${t.totalDuraks}</td>
               </tr>
@@ -1424,7 +1429,7 @@ async function renderSeries(match) {
       <h2>${isActive ? 'Текущий зачёт' : '🏆 Итоги серии'}</h2>
       <div class="card totals-card table-scroll">
         <table class="totals">
-          <thead><tr><th>Игрок</th><th>Побед</th><th>Лидер по очкам</th><th>Очков всего</th><th>Взаимозачёт</th><th>Шаров всего</th><th>Дураков</th></tr></thead>
+          <thead><tr><th>Игрок</th><th>Побед</th><th>Лидер по очкам</th><th>Очков всего</th><th>Шаров всего</th><th>Дураков</th></tr></thead>
           <tbody>
             ${sortedTotals.map((t) => `
               <tr>
@@ -1436,7 +1441,6 @@ async function renderSeries(match) {
                 <td>${t.wins}</td>
                 <td>${t.pointsLeads}</td>
                 <td>${signed(t.totalPoints)}</td>
-                <td>${signed(t.totalMutualPoints)}</td>
                 <td>${t.totalBalls}</td>
                 <td>${t.totalDuraks}</td>
               </tr>
@@ -1914,12 +1918,11 @@ async function renderGameDetail(match) {
   game.players.forEach((p) => {
     detailScores[p.id] = (game.finalScores && game.finalScores[p.id]) || st.scores[p.id];
   });
-  const detailMutualPoints = mutualPointsMap(game.players, (p) => detailScores[p.id].points);
-  const detailState = { ...st, scores: detailScores, mutualPoints: detailMutualPoints };
+  const detailState = { ...st, scores: detailScores };
   const detailView = getGameDetailView();
   const scoreViewHTML = detailView === 'sheet'
     ? scoreSheetHTML(game, detailState, { canControl: false, isFinished: true })
-    : gameDetailCardsHTML(game, detailScores, detailMutualPoints);
+    : gameDetailCardsHTML(game, detailScores);
 
   app.innerHTML = `
     <a href="${game.seriesId ? '#/series/' + esc(game.seriesId) : '#/history'}" class="back-link">← Назад</a>
