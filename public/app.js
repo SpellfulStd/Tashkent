@@ -74,8 +74,6 @@ const EVENT_DEFS = {
   golden_duplet:  { label: 'Золотой дуплет', balls: 1, points: 0, prevDelta: 0, keepTurn: true, isPocket: true,  isDurak: false, isGolden: true, goldenTier: 1 },
   golden_pants:   { label: 'Золотые штаны',  balls: 2, points: 0, prevDelta: 0, keepTurn: true, isPocket: true,  isDurak: false, isGolden: true, goldenTier: 2 },
 };
-const GOLDEN_TOTAL_BALLS = 15;
-const GOLDEN_PLAYER_BALLS = 5;
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -317,8 +315,6 @@ function computeState(game) {
   if (tiedTop.length !== 1) pointsLeader = null;
 
   const totalBalls = game.players.reduce((sum, p) => sum + scores[p.id].balls, 0);
-  const isGoldenPhase = totalBalls === GOLDEN_TOTAL_BALLS
-    && game.players.every((p) => scores[p.id].balls === GOLDEN_PLAYER_BALLS);
   const prevPlayer = n > 0 ? game.players[prevIndex(turnIdx, n)] : null;
   return {
     scores,
@@ -328,8 +324,8 @@ function computeState(game) {
     pointsLeader,
     prevPlayer,
     totalBalls,
-    isGoldenPhase,
-    allBallsGone: totalBalls >= GOLDEN_TOTAL_BALLS && !isGoldenPhase,
+    isGoldenPhase: totalBalls === 14,
+    allBallsGone: totalBalls >= 15,
   };
 }
 
@@ -1807,7 +1803,7 @@ async function renderLiveGame(match, token) {
         ${!isFinished && st.isGoldenPhase ? `
           <div class="notice gold">
             <strong>Золотой шар</strong>
-            <p class="muted">У игроков 15 шаров: по 5 у каждого.</p>
+            <p class="muted">На столе остался последний прицельный шар.</p>
           </div>
         ` : ''}
 
