@@ -59,21 +59,86 @@ function broadcast(msg) {
 }
 
 // ---- Auth routes ----
-app.get('/login', (req, res) => {
+function renderAuthPage({ title, text, actionHref, actionLabel, secondaryHref, secondaryLabel }) {
+  return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>${title} — Ташкент</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <a href="/" class="logo" aria-label="Ташкент — главная"><span class="logo-mark">🎱</span><span>Ташкент</span></a>
+    <div class="user-bar">
+      <a href="/" class="logout-link">На главную</a>
+    </div>
+  </header>
+  <main class="auth-main">
+    <section class="hero-panel auth-panel" aria-labelledby="auth-title">
+      <p class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span>Аккаунт</p>
+      <h1 id="auth-title">${title}</h1>
+      <p>${text}</p>
+      <div class="button-row auth-actions">
+        <a class="btn" href="${actionHref}">${actionLabel}</a>
+        <a class="btn ghost" href="${secondaryHref}">${secondaryLabel}</a>
+      </div>
+      <a class="back-link" href="/">← На главную сервиса</a>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function startOidc(req, res, registration = false) {
   const state = generators.state();
   const nonce = generators.nonce();
   req.session.oidc = { state, nonce };
-  res.redirect(oidc.authorizationUrl({ scope: 'openid email profile', state, nonce }));
+  const url = oidc.authorizationUrl({ scope: 'openid email profile', state, nonce });
+  res.redirect(registration
+    ? url.replace('/protocol/openid-connect/auth', '/protocol/openid-connect/registrations')
+    : url);
+}
+
+app.get('/login', (req, res) => {
+  if (req.session.user) return res.redirect('/');
+  res.send(renderAuthPage({
+    title: 'Вход',
+    text: 'Войдите через аккаунт Ташкента, чтобы продолжить учёт партий, серий и статистики.',
+    actionHref: '/auth/login',
+    actionLabel: 'Войти',
+    secondaryHref: '/register',
+    secondaryLabel: 'Регистрация',
+  }));
+});
+
+app.get('/register', (req, res) => {
+  if (req.session.user) return res.redirect('/');
+  res.send(renderAuthPage({
+    title: 'Регистрация',
+    text: 'Создайте аккаунт Ташкента через форму регистрации и возвращайтесь к учёту игр.',
+    actionHref: '/auth/register',
+    actionLabel: 'Зарегистрироваться',
+    secondaryHref: '/login',
+    secondaryLabel: 'У меня уже есть аккаунт',
+  }));
+});
+
+app.get('/auth/login', (req, res) => {
+  if (req.session.user) return res.redirect('/');
+  startOidc(req, res);
 });
 
 // сразу на форму регистрации Keycloak (endpoint /registrations)
-app.get('/register', (req, res) => {
-  const state = generators.state();
-  const nonce = generators.nonce();
-  req.session.oidc = { state, nonce };
-  const url = oidc.authorizationUrl({ scope: 'openid email profile', state, nonce })
-    .replace('/protocol/openid-connect/auth', '/protocol/openid-connect/registrations');
-  res.redirect(url);
+app.get('/auth/register', (req, res) => {
+  if (req.session.user) return res.redirect('/');
+  startOidc(req, res, true);
+});
+
+app.get('/landing.html', (req, res) => {
+  if (req.session.user) return res.redirect('/');
+  res.sendFile(path.join(PUBLIC, 'landing.html'));
 });
 
 app.get('/callback', async (req, res) => {

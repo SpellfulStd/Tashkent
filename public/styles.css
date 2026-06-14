@@ -221,6 +221,21 @@ p {
   font-size: 42px;
 }
 
+.auth-main {
+  min-height: calc(100vh - 76px);
+  display: grid;
+  align-items: center;
+}
+
+.auth-panel {
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.auth-actions {
+  margin-bottom: 14px;
+}
+
 .eyebrow {
   display: inline-flex;
   align-items: center;
