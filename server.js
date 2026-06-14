@@ -65,6 +65,16 @@ app.get('/login', (req, res) => {
   res.redirect(oidc.authorizationUrl({ scope: 'openid email profile', state, nonce }));
 });
 
+// сразу на форму регистрации Keycloak (endpoint /registrations)
+app.get('/register', (req, res) => {
+  const state = generators.state();
+  const nonce = generators.nonce();
+  req.session.oidc = { state, nonce };
+  const url = oidc.authorizationUrl({ scope: 'openid email profile', state, nonce })
+    .replace('/protocol/openid-connect/auth', '/protocol/openid-connect/registrations');
+  res.redirect(url);
+});
+
 app.get('/callback', async (req, res) => {
   try {
     const params = oidc.callbackParams(req);
@@ -80,6 +90,12 @@ app.get('/callback', async (req, res) => {
       [c.sub, c.preferred_username, c.email]
     );
     await pool.query('UPDATE players SET account_username=$2 WHERE account_sub=$1', [c.sub, c.preferred_username]);
+    // новый пользователь сразу становится игроком (если ещё не привязан ни к одному)
+    const hasPlayer = (await pool.query('SELECT 1 FROM players WHERE account_sub=$1', [c.sub])).rows[0];
+    if (!hasPlayer) {
+      await pool.query('INSERT INTO players (name, account_sub, account_username) VALUES ($1,$2,$3)',
+        [c.name || c.preferred_username, c.sub, c.preferred_username]);
+    }
     res.redirect('/');
   } catch (e) {
     res.status(500).send('Ошибка авторизации: ' + e.message);
@@ -116,6 +132,7 @@ async function loadGame(id) {
 const pid = (v, set) => (v && set.has(v) ? v : null);
 const myPlayer = async (sub) =>
   (await pool.query('SELECT id FROM players WHERE account_sub=$1', [sub])).rows[0] || null;
+const isAdmin = (user) => !!user && user.username === 'spellful';
 
 // ---- Me / accounts / active ----
 app.get('/api/me', requireAuth, async (req, res) => {
@@ -137,7 +154,9 @@ app.get('/api/active', requireAuth, async (req, res) => {
   )).rows[0] || null;
   const me = await myPlayer(req.session.user.sub);
   const attached = !!(me && game && game.players.some(p => p.id === me.id));
-  res.json({ game, series, myPlayerId: me ? me.id : null, attached });
+  // активную игру показываем только её участнику или админу
+  const visibleGame = (attached || isAdmin(req.session.user)) ? game : null;
+  res.json({ game: visibleGame, series, myPlayerId: me ? me.id : null, attached });
 });
 
 // ---- Players ----
@@ -224,12 +243,27 @@ app.delete('/api/series/:id', requireAuth, async (req, res) => {
 
 // ---- Games ----
 app.get('/api/games', requireAuth, async (req, res) => {
-  const ids = (await pool.query('SELECT id FROM games ORDER BY created_at DESC')).rows;
-  res.json(await Promise.all(ids.map(r => loadGame(r.id))));
+  let rows;
+  if (isAdmin(req.session.user)) {
+    rows = (await pool.query('SELECT id FROM games ORDER BY created_at DESC')).rows;
+  } else {
+    const me = await myPlayer(req.session.user.sub);
+    if (!me) return res.json([]);
+    rows = (await pool.query(
+      `SELECT g.id FROM games g JOIN game_players gp ON gp.game_id=g.id
+       WHERE gp.player_id=$1 ORDER BY g.created_at DESC`, [me.id]
+    )).rows;
+  }
+  res.json(await Promise.all(rows.map(r => loadGame(r.id))));
 });
 app.get('/api/games/:id', requireAuth, async (req, res) => {
   const g = await loadGame(req.params.id);
-  g ? res.json(g) : res.status(404).json({ error: 'not found' });
+  if (!g) return res.status(404).json({ error: 'not found' });
+  if (!isAdmin(req.session.user)) {
+    const me = await myPlayer(req.session.user.sub);
+    if (!me || !g.players.some(p => p.id === me.id)) return res.status(403).json({ error: 'forbidden' });
+  }
+  res.json(g);
 });
 app.post('/api/games', requireAuth, async (req, res) => {
   const b = req.body;
@@ -317,6 +351,56 @@ async function writeEvents(client, gameId, events, pset) {
       [gameId, i, pid(e.playerId, pset), e.type, e.ts || new Date().toISOString()]);
   }
 }
+
+// объединить историю непривязанного игрока (source) в свой профиль (target)
+app.post('/api/players/:id/merge', requireAuth, async (req, res) => {
+  const target = req.params.id;
+  const source = req.body.sourceId;
+  if (!source) return res.status(400).json({ error: 'sourceId required' });
+  const tp = (await pool.query('SELECT id, name, account_sub FROM players WHERE id=$1', [target])).rows[0];
+  const sp = (await pool.query('SELECT id, account_sub FROM players WHERE id=$1', [source])).rows[0];
+  if (!tp || !sp) return res.status(404).json({ error: 'not found' });
+  if (!isAdmin(req.session.user) && tp.account_sub !== req.session.user.sub)
+    return res.status(403).json({ error: 'not your profile' });
+  if (sp.account_sub) return res.status(400).json({ error: 'source is linked' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('UPDATE game_players SET player_id=$1, name=$2 WHERE player_id=$3', [target, tp.name, source]);
+    await client.query('UPDATE game_events SET player_id=$1 WHERE player_id=$2', [target, source]);
+    await client.query('UPDATE games SET winner_player_id=$1 WHERE winner_player_id=$2', [target, source]);
+    await client.query('UPDATE games SET points_leader_player_id=$1 WHERE points_leader_player_id=$2', [target, source]);
+    const fs = (await client.query('SELECT id, final_scores FROM games WHERE jsonb_exists(final_scores, $1)', [source])).rows;
+    for (const g of fs) {
+      const sc = g.final_scores; sc[target] = sc[source]; delete sc[source];
+      await client.query('UPDATE games SET final_scores=$2 WHERE id=$1', [g.id, JSON.stringify(sc)]);
+    }
+    await client.query('DELETE FROM players WHERE id=$1', [source]);
+    await client.query('COMMIT');
+    broadcast({ type: 'activeChanged' });
+    res.json({ ok: true });
+  } catch (e) { await client.query('ROLLBACK'); res.status(500).json({ error: e.message }); }
+  finally { client.release(); }
+});
+
+// ---- Админ-чат (codex-агент, только spellful). Задачи в очередь admin_tasks, их выполняет хост-воркер. ----
+const requireAdmin = (req, res, next) =>
+  (req.session.user && isAdmin(req.session.user)) ? next() : res.status(403).json({ error: 'forbidden' });
+app.post('/api/admin/chat', requireAdmin, async (req, res) => {
+  const prompt = (req.body.prompt || '').trim();
+  if (!prompt) return res.status(400).json({ error: 'prompt required' });
+  const r = await pool.query(
+    "INSERT INTO admin_tasks (prompt, status) VALUES ($1,'pending') RETURNING id, prompt, status, created_at AS \"createdAt\"",
+    [prompt]
+  );
+  res.status(201).json(r.rows[0]);
+});
+app.get('/api/admin/tasks', requireAdmin, async (req, res) => {
+  const r = await pool.query(
+    'SELECT id, prompt, status, output, created_at AS "createdAt", updated_at AS "updatedAt" FROM admin_tasks ORDER BY created_at DESC LIMIT 50'
+  );
+  res.json(r.rows);
+});
 
 app.use(express.static(PUBLIC, { index: false }));
 
