@@ -494,10 +494,10 @@ function eventPointDeltas(game, ev) {
 }
 
 function appendScoreMark(marks, mark) {
-  for (let i = marks.length - 1; i >= 0; i--) {
+  // Offsets go top-down: circle the earlier opposite mark and omit the closing mark.
+  for (let i = 0; i < marks.length; i++) {
     if (!marks[i].settled && marks[i].sign !== mark.sign) {
       marks[i].settled = true;
-      marks.push({ ...mark, settled: true });
       return;
     }
   }
