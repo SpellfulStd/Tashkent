@@ -752,11 +752,6 @@ label {
   background: rgba(2, 6, 23, 0.24);
 }
 
-.score-sheet .sheet-event-head {
-  width: 86px;
-  text-align: left;
-}
-
 .sheet-player-head {
   min-height: 58px;
   display: grid;
@@ -800,22 +795,8 @@ label {
   font-weight: 900;
 }
 
-.sheet-event {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
-  line-height: 1.25;
-  text-align: left;
-}
-
-.sheet-num {
-  display: block;
-  color: #bbecff;
-  font-size: 11px;
-}
-
-.sheet-cell.shooter {
-  background: rgba(56, 189, 248, 0.05);
+.sheet-column-cell {
+  vertical-align: top;
 }
 
 .sheet-marks {
@@ -825,6 +806,13 @@ label {
   align-items: center;
   justify-content: center;
   gap: 4px;
+}
+
+.sheet-column-marks {
+  min-height: 120px;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
 }
 
 .sheet-mark {
@@ -851,11 +839,6 @@ label {
   background: rgba(148, 163, 184, 0.12);
 }
 
-.sheet-mark.settled {
-  border-color: var(--gold);
-  box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.16);
-}
-
 .sheet-mark.penalty {
   color: #fff;
   border-color: rgba(239, 68, 68, 0.68);
@@ -869,20 +852,6 @@ label {
   font-size: 8px;
   font-weight: 900;
   line-height: 1;
-}
-
-.sheet-turn {
-  display: inline-flex;
-  align-items: center;
-  min-height: 24px;
-  padding: 3px 8px;
-  border: 1px solid rgba(56, 189, 248, 0.36);
-  border-radius: 999px;
-  color: #bbecff;
-  background: rgba(8, 47, 73, 0.26);
-  font-size: 11px;
-  font-weight: 900;
-  text-transform: uppercase;
 }
 
 .score-sheet tfoot th,

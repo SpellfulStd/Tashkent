@@ -470,52 +470,39 @@ function eventPointDeltas(game, ev) {
   return deltas;
 }
 
-function settleScoreMark(ledger, playerId, mark) {
-  const pending = ledger.get(playerId);
-  if (!pending || !mark.sign) return;
-  const prev = pending[pending.length - 1];
+function appendScoreMark(marks, mark) {
+  const prev = marks[marks.length - 1];
   if (prev && prev.sign !== mark.sign) {
-    prev.settled = true;
-    mark.settled = true;
-    pending.pop();
+    marks.pop();
     return;
   }
-  pending.push(mark);
+  marks.push(mark);
 }
 
-function buildScoreSheetRows(game) {
-  const ledger = new Map(game.players.map((p) => [p.id, []]));
-  return visibleEvents(game).map((ev, index) => {
-    const def = EVENT_DEFS[ev.type];
+function buildScoreSheetColumns(game) {
+  const columns = {};
+  game.players.forEach((p) => { columns[p.id] = []; });
+
+  visibleEvents(game).forEach((ev) => {
     const letter = scoreSheetEventLetter(ev.type);
     const deltas = eventPointDeltas(game, ev);
-    const cells = {};
-    game.players.forEach((p) => { cells[p.id] = []; });
 
     game.players.forEach((p) => {
       const delta = deltas.get(p.id) || 0;
       const sign = delta > 0 ? 1 : -1;
       for (let i = 0; i < Math.abs(delta); i++) {
-        const mark = { sign, letter, isPenalty: ev.type === 'penalty', settled: false };
-        settleScoreMark(ledger, p.id, mark);
-        cells[p.id].push(mark);
+        appendScoreMark(columns[p.id], { sign, letter, isPenalty: ev.type === 'penalty' });
       }
     });
-
-    if (ev.type === 'set_turn' && cells[ev.playerId]) {
-      cells[ev.playerId].push({ turn: true });
-    }
-
-    return { index: index + 1, ev, def, cells };
   });
+
+  return columns;
 }
 
 function scoreMarkHTML(mark) {
-  if (mark.turn) return '<span class="sheet-turn">ход</span>';
   const classes = [
     'sheet-mark',
     mark.sign > 0 ? 'plus' : 'minus',
-    mark.settled ? 'settled' : '',
     mark.isPenalty ? 'penalty' : '',
   ].filter(Boolean).join(' ');
   return `
@@ -537,12 +524,6 @@ function uniqueBallsLeader(game, scores) {
   if (maxBalls <= 0) return null;
   const leaders = game.players.filter((p) => scores[p.id].balls === maxBalls);
   return leaders.length === 1 ? leaders[0] : null;
-}
-
-function compactEventLabel(def, ev) {
-  if (!def) return ev.type;
-  if (ev.type === 'set_turn') return 'Ход';
-  return def.label;
 }
 
 function liveViewSwitchHTML(activeView) {
@@ -586,18 +567,18 @@ function playerCardsHTML(game, st, { canControl, isFinished, firstWinner }) {
 }
 
 function scoreSheetHTML(game, st, { canControl, isFinished }) {
-  const rows = buildScoreSheetRows(game);
+  const columns = buildScoreSheetColumns(game);
+  const hasMarks = game.players.some((p) => columns[p.id] && columns[p.id].length);
   const leader = uniqueBallsLeader(game, st.scores);
   const currentPlayer = !isFinished ? game.players[st.turnIdx] : null;
-  const colCount = game.players.length + 1;
+  const colCount = game.players.length || 1;
 
   return `
     <div class="score-sheet card">
       <div class="table-scroll">
-        <table style="--sheet-min-width: ${86 + game.players.length * 76}px;">
+        <table style="--sheet-min-width: ${game.players.length * 76}px;">
           <thead>
             <tr>
-              <th class="sheet-event-head">Ход</th>
               ${game.players.map((p) => {
                 const s = st.scores[p.id];
                 const isLeader = leader && leader.id === p.id;
@@ -614,22 +595,18 @@ function scoreSheetHTML(game, st, { canControl, isFinished }) {
             </tr>
           </thead>
           <tbody>
-            ${rows.length ? rows.map((row) => `
+            ${hasMarks ? `
               <tr>
-                <td class="sheet-event">
-                  <span class="sheet-num">${row.index}</span>
-                  <span>${esc(compactEventLabel(row.def, row.ev))}</span>
-                </td>
                 ${game.players.map((p) => {
-                  const marks = row.cells[p.id] || [];
+                  const marks = columns[p.id] || [];
                   return `
-                    <td class="sheet-cell ${row.ev.playerId === p.id ? 'shooter' : ''}">
-                      <div class="sheet-marks">${marks.map(scoreMarkHTML).join('')}</div>
+                    <td class="sheet-cell sheet-column-cell">
+                      <div class="sheet-marks sheet-column-marks">${marks.map(scoreMarkHTML).join('')}</div>
                     </td>
                   `;
                 }).join('')}
               </tr>
-            `).join('') : `
+            ` : `
               <tr>
                 <td class="empty-state" colspan="${colCount}">Пока нет отметок.</td>
               </tr>
@@ -637,7 +614,6 @@ function scoreSheetHTML(game, st, { canControl, isFinished }) {
           </tbody>
           <tfoot>
             <tr>
-              <th>Итог</th>
               ${game.players.map((p) => `<td class="sheet-total">${signed(st.scores[p.id].points)}</td>`).join('')}
             </tr>
           </tfoot>
