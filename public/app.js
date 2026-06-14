@@ -413,6 +413,240 @@ function eventLogHTML(game, events = visibleEvents(game)) {
   }).join('');
 }
 
+const LIVE_GAME_VIEW_KEY = 'tashkent.liveGameView';
+
+function getLiveGameView() {
+  try {
+    return localStorage.getItem(LIVE_GAME_VIEW_KEY) === 'sheet' ? 'sheet' : 'cards';
+  } catch {
+    return 'cards';
+  }
+}
+
+function setLiveGameView(view) {
+  try {
+    localStorage.setItem(LIVE_GAME_VIEW_KEY, view === 'sheet' ? 'sheet' : 'cards');
+  } catch {
+    // localStorage can be unavailable in restrictive browser modes.
+  }
+}
+
+function scoreSheetEventLetter(type) {
+  if (type === 'pocket_regular' || type === 'miss' || type === 'set_turn') return '';
+  const def = EVENT_DEFS[type];
+  if (!def) return '';
+  return (def.label || type).trim().charAt(0).toLocaleUpperCase('ru-RU');
+}
+
+function eventPointDeltas(game, ev) {
+  const deltas = new Map();
+  const def = EVENT_DEFS[ev.type];
+  const n = game.players.length;
+  const idx = game.players.findIndex((p) => p.id === ev.playerId);
+  if (!def || idx < 0) return deltas;
+
+  const add = (playerId, amount) => {
+    if (!amount) return;
+    deltas.set(playerId, (deltas.get(playerId) || 0) + amount);
+  };
+
+  if (def.isGolden) {
+    add(ev.playerId, n + def.goldenTier);
+    if (n > 1) {
+      const prevId = game.players[prevIndex(idx, n)].id;
+      add(prevId, -(2 + def.goldenTier));
+      game.players.forEach((p) => {
+        if (p.id !== ev.playerId && p.id !== prevId) add(p.id, -1);
+      });
+    }
+    return deltas;
+  }
+
+  add(ev.playerId, def.points);
+  if (def.prevDelta && n > 1) {
+    const prevId = game.players[prevIndex(idx, n)].id;
+    if (prevId !== ev.playerId) add(prevId, def.prevDelta);
+  }
+  return deltas;
+}
+
+function settleScoreMark(ledger, playerId, mark) {
+  const pending = ledger.get(playerId);
+  if (!pending || !mark.sign) return;
+  const prev = pending[pending.length - 1];
+  if (prev && prev.sign !== mark.sign) {
+    prev.settled = true;
+    mark.settled = true;
+    pending.pop();
+    return;
+  }
+  pending.push(mark);
+}
+
+function buildScoreSheetRows(game) {
+  const ledger = new Map(game.players.map((p) => [p.id, []]));
+  return visibleEvents(game).map((ev, index) => {
+    const def = EVENT_DEFS[ev.type];
+    const letter = scoreSheetEventLetter(ev.type);
+    const deltas = eventPointDeltas(game, ev);
+    const cells = {};
+    game.players.forEach((p) => { cells[p.id] = []; });
+
+    game.players.forEach((p) => {
+      const delta = deltas.get(p.id) || 0;
+      const sign = delta > 0 ? 1 : -1;
+      for (let i = 0; i < Math.abs(delta); i++) {
+        const mark = { sign, letter, isPenalty: ev.type === 'penalty', settled: false };
+        settleScoreMark(ledger, p.id, mark);
+        cells[p.id].push(mark);
+      }
+    });
+
+    if (ev.type === 'set_turn' && cells[ev.playerId]) {
+      cells[ev.playerId].push({ turn: true });
+    }
+
+    return { index: index + 1, ev, def, cells };
+  });
+}
+
+function scoreMarkHTML(mark) {
+  if (mark.turn) return '<span class="sheet-turn">ход</span>';
+  const classes = [
+    'sheet-mark',
+    mark.sign > 0 ? 'plus' : 'minus',
+    mark.settled ? 'settled' : '',
+    mark.isPenalty ? 'penalty' : '',
+  ].filter(Boolean).join(' ');
+  return `
+    <span class="${classes}">
+      <span class="sheet-sign">${mark.sign > 0 ? '+' : '-'}</span>
+      ${mark.letter ? `<span class="sheet-letter">${esc(mark.letter)}</span>` : ''}
+    </span>
+  `;
+}
+
+function playerInitial(name) {
+  const trimmed = String(name || '?').trim();
+  return (trimmed.charAt(0) || '?').toLocaleUpperCase('ru-RU');
+}
+
+function uniqueBallsLeader(game, scores) {
+  if (!game.players.length) return null;
+  const maxBalls = Math.max(...game.players.map((p) => scores[p.id].balls));
+  if (maxBalls <= 0) return null;
+  const leaders = game.players.filter((p) => scores[p.id].balls === maxBalls);
+  return leaders.length === 1 ? leaders[0] : null;
+}
+
+function compactEventLabel(def, ev) {
+  if (!def) return ev.type;
+  if (ev.type === 'set_turn') return 'Ход';
+  return def.label;
+}
+
+function liveViewSwitchHTML(activeView) {
+  return `
+    <div class="live-view-switch" role="group" aria-label="Вид счёта">
+      <button type="button" data-live-view="cards" class="${activeView === 'cards' ? 'active' : ''}" aria-pressed="${activeView === 'cards'}">Текущий</button>
+      <button type="button" data-live-view="sheet" class="${activeView === 'sheet' ? 'active' : ''}" aria-pressed="${activeView === 'sheet'}">Столбцы</button>
+    </div>
+  `;
+}
+
+function playerCardsHTML(game, st, { canControl, isFinished, firstWinner }) {
+  return `
+    <div id="playersWrap">
+      ${game.players.map((p, i) => {
+        const s = st.scores[p.id];
+        const isTurn = !isFinished && i === st.turnIdx;
+        const isWin = isFinished && p.id === game.winnerId;
+        const isFirstWin = !isFinished && firstWinner && p.id === firstWinner.id;
+        const isPtsLeader = st.pointsLeader && st.pointsLeader.id === p.id;
+        return `
+          <div class="player-card ${isTurn ? 'active' : ''} ${isWin || isFirstWin ? 'win' : ''} ${canControl ? 'clickable' : ''}" ${canControl ? `data-pick="${esc(p.id)}"` : ''}>
+            <div class="head">
+              <div class="name">
+                ${esc(p.name)}
+                ${isWin || isFirstWin ? ' 🏆' : ''}
+                ${isPtsLeader ? '<span class="pts-leader">🥇 лидер по очкам</span>' : ''}
+              </div>
+              ${isTurn ? '<span class="turn-badge">ход</span>' : ''}
+            </div>
+            <div class="stats">
+              <div class="balls">${s.balls}<span class="target">/${esc(game.targetBalls)}</span></div>
+              <div class="points">${signed(s.points)} очк.</div>
+              ${s.duraks > 0 ? `<div class="duraks">🤡 ${s.duraks}</div>` : ''}
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function scoreSheetHTML(game, st, { canControl, isFinished }) {
+  const rows = buildScoreSheetRows(game);
+  const leader = uniqueBallsLeader(game, st.scores);
+  const currentPlayer = !isFinished ? game.players[st.turnIdx] : null;
+  const colCount = game.players.length + 1;
+
+  return `
+    <div class="score-sheet card">
+      <div class="table-scroll">
+        <table style="--sheet-min-width: ${86 + game.players.length * 76}px;">
+          <thead>
+            <tr>
+              <th class="sheet-event-head">Ход</th>
+              ${game.players.map((p) => {
+                const s = st.scores[p.id];
+                const isLeader = leader && leader.id === p.id;
+                const isTurn = currentPlayer && currentPlayer.id === p.id;
+                return `
+                  <th class="${isTurn ? 'sheet-active-player' : ''}">
+                    <div class="sheet-player-head ${canControl ? 'clickable' : ''}" title="${esc(p.name)}" ${canControl ? `data-pick="${esc(p.id)}"` : ''}>
+                      <span class="sheet-initial">${esc(playerInitial(p.name))}${isLeader ? '<span class="sheet-crown">👑</span>' : ''}</span>
+                      <span class="sheet-balls">${s.balls}/${esc(game.targetBalls)}</span>
+                    </div>
+                  </th>
+                `;
+              }).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.length ? rows.map((row) => `
+              <tr>
+                <td class="sheet-event">
+                  <span class="sheet-num">${row.index}</span>
+                  <span>${esc(compactEventLabel(row.def, row.ev))}</span>
+                </td>
+                ${game.players.map((p) => {
+                  const marks = row.cells[p.id] || [];
+                  return `
+                    <td class="sheet-cell ${row.ev.playerId === p.id ? 'shooter' : ''}">
+                      <div class="sheet-marks">${marks.map(scoreMarkHTML).join('')}</div>
+                    </td>
+                  `;
+                }).join('')}
+              </tr>
+            `).join('') : `
+              <tr>
+                <td class="empty-state" colspan="${colCount}">Пока нет отметок.</td>
+              </tr>
+            `}
+          </tbody>
+          <tfoot>
+            <tr>
+              <th>Итог</th>
+              ${game.players.map((p) => `<td class="sheet-total">${signed(st.scores[p.id].points)}</td>`).join('')}
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
 function gameRowHTML(g) {
   const winner = g.winnerId ? g.players.find((p) => p.id === g.winnerId) : null;
   const pointsLeader = g.pointsLeaderId ? g.players.find((p) => p.id === g.pointsLeaderId) : null;
@@ -1305,6 +1539,10 @@ async function renderLiveGame(match, token) {
     const prevName = st.prevPlayer ? st.prevPlayer.name : null;
     const firstWinner = st.firstWinner || (game.winnerId ? game.players.find((p) => p.id === game.winnerId) : null);
     const shownEvents = visibleEvents(game);
+    const liveView = getLiveGameView();
+    const scoreViewHTML = liveView === 'sheet'
+      ? scoreSheetHTML(game, st, { canControl, isFinished })
+      : playerCardsHTML(game, st, { canControl, isFinished, firstWinner });
 
     app.innerHTML = `
       <a href="${game.seriesId ? '#/series/' + esc(game.seriesId) : '#/'}" class="back-link">← ${game.seriesId ? 'В серию' : 'Главная'}</a>
@@ -1339,32 +1577,8 @@ async function renderLiveGame(match, token) {
 
       ${!isFinished ? `<p class="muted">Минус/плюс полетит предыдущему игроку: <strong>${esc(prevName || '—')}</strong></p>` : ''}
 
-      <div id="playersWrap">
-        ${game.players.map((p, i) => {
-          const s = st.scores[p.id];
-          const isTurn = !isFinished && i === st.turnIdx;
-          const isWin = isFinished && p.id === game.winnerId;
-          const isFirstWin = !isFinished && firstWinner && p.id === firstWinner.id;
-          const isPtsLeader = st.pointsLeader && st.pointsLeader.id === p.id;
-          return `
-            <div class="player-card ${isTurn ? 'active' : ''} ${isWin || isFirstWin ? 'win' : ''} ${canControl ? 'clickable' : ''}" ${canControl ? `data-pick="${esc(p.id)}"` : ''}>
-              <div class="head">
-                <div class="name">
-                  ${esc(p.name)}
-                  ${isWin || isFirstWin ? ' 🏆' : ''}
-                  ${isPtsLeader ? '<span class="pts-leader">🥇 лидер по очкам</span>' : ''}
-                </div>
-                ${isTurn ? '<span class="turn-badge">ход</span>' : ''}
-              </div>
-              <div class="stats">
-                <div class="balls">${s.balls}<span class="target">/${esc(game.targetBalls)}</span></div>
-                <div class="points">${signed(s.points)} очк.</div>
-                ${s.duraks > 0 ? `<div class="duraks">🤡 ${s.duraks}</div>` : ''}
-              </div>
-            </div>
-          `;
-        }).join('')}
-      </div>
+      ${liveViewSwitchHTML(liveView)}
+      ${scoreViewHTML}
 
       ${!isFinished && canControl ? `
         <p class="muted small-note">Тапни по игроку, чтобы передать ему ход.</p>
@@ -1416,6 +1630,10 @@ async function renderLiveGame(match, token) {
     document.querySelectorAll('[data-ev]').forEach((b) => b.addEventListener('click', () => pushEvent(b.dataset.ev)));
     document.querySelectorAll('[data-pass-turn]').forEach((b) => b.addEventListener('click', passTurn));
     document.querySelectorAll('[data-pick]').forEach((el) => el.addEventListener('click', () => setTurn(el.dataset.pick)));
+    document.querySelectorAll('[data-live-view]').forEach((b) => b.addEventListener('click', () => {
+      setLiveGameView(b.dataset.liveView);
+      render();
+    }));
     const undoBtn = document.getElementById('undoBtn'); if (undoBtn) undoBtn.addEventListener('click', undoLast);
     const endBtn = document.getElementById('endBtn'); if (endBtn) endBtn.addEventListener('click', endGame);
     const finishBtn = document.getElementById('finishBtn'); if (finishBtn) finishBtn.addEventListener('click', finishGame);
