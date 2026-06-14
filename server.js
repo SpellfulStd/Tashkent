@@ -3,6 +3,7 @@ const session = require('express-session');
 const PgSession = require('connect-pg-simple')(session);
 const { Pool } = require('pg');
 const { Issuer, generators } = require('openid-client');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -11,6 +12,15 @@ const WebSocket = require('ws');
 const PORT = process.env.PORT || 7777;
 const PUBLIC = path.join(__dirname, 'public');
 const APP_URL = process.env.APP_URL || 'https://tashkent.spellful.site';
+const ADMIN_UPLOAD_DIR = path.join(__dirname, 'data', 'admin_uploads');
+const ADMIN_CHAT_MAX_IMAGES = 5;
+const ADMIN_CHAT_MAX_IMAGE_BYTES = 3 * 1024 * 1024;
+const ADMIN_CHAT_IMAGE_TYPES = new Map([
+  ['image/jpeg', '.jpg'],
+  ['image/png', '.png'],
+  ['image/webp', '.webp'],
+  ['image/gif', '.gif'],
+]);
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
@@ -38,7 +48,7 @@ async function initOidc() {
 
 const app = express();
 app.set('trust proxy', 1);
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '24mb' }));
 const sessionMiddleware = session({
   store: new PgSession({ pool, tableName: 'session' }),
   secret: process.env.SESSION_SECRET,
@@ -199,6 +209,92 @@ const pid = (v, set) => (v && set.has(v) ? v : null);
 const myPlayer = async (sub) =>
   (await pool.query('SELECT id FROM players WHERE account_sub=$1', [sub])).rows[0] || null;
 const isAdmin = (user) => !!user && user.username === 'spellful';
+
+function safeAdminUploadName(name, mime) {
+  const ext = ADMIN_CHAT_IMAGE_TYPES.get(mime) || '.jpg';
+  const stem = path.basename(String(name || 'photo'), path.extname(String(name || '')))
+    .normalize('NFKD')
+    .replace(/[^\w.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'photo';
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  return `${ts}-${crypto.randomUUID()}-${stem}${ext}`;
+}
+
+async function saveAdminChatImages(images) {
+  if (!images) return [];
+  if (!Array.isArray(images)) {
+    const err = new Error('images must be an array');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (images.length > ADMIN_CHAT_MAX_IMAGES) {
+    const err = new Error(`Можно прикрепить не больше ${ADMIN_CHAT_MAX_IMAGES} фото`);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const prepared = [];
+  for (const image of images) {
+    const rawData = String(image && image.data || '');
+    const dataUrl = rawData.match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
+    const mime = String((dataUrl ? dataUrl[1] : image && image.type) || '').toLowerCase();
+    if (!ADMIN_CHAT_IMAGE_TYPES.has(mime)) {
+      const err = new Error('Поддерживаются только JPG, PNG, WebP и GIF');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const base64 = (dataUrl ? dataUrl[2] : rawData).replace(/\s/g, '');
+    if (!base64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) {
+      const err = new Error('Некорректные данные изображения');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const buffer = Buffer.from(base64, 'base64');
+    if (!buffer.length || buffer.length > ADMIN_CHAT_MAX_IMAGE_BYTES) {
+      const err = new Error('Фото должно быть не больше 3 МБ после сжатия');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const fileName = safeAdminUploadName(image && image.name, mime);
+    const filePath = path.join(ADMIN_UPLOAD_DIR, fileName);
+    prepared.push({
+      originalName: String(image && image.name || 'photo'),
+      mime,
+      bytes: buffer.length,
+      buffer,
+      fileName,
+      filePath,
+      url: `/api/admin/uploads/${fileName}`,
+    });
+  }
+
+  await fs.promises.mkdir(ADMIN_UPLOAD_DIR, { recursive: true });
+  const saved = [];
+  for (const image of prepared) {
+    await fs.promises.writeFile(image.filePath, image.buffer, { flag: 'wx' });
+    const { buffer, ...meta } = image;
+    saved.push(meta);
+  }
+  return saved;
+}
+
+function buildAdminChatPrompt(prompt, images) {
+  const text = prompt || 'Проанализируй прикрепленные фотографии.';
+  if (!images.length) return text;
+
+  const lines = [text, '', '---', 'Фотографии, загруженные в чат:'];
+  images.forEach((image, idx) => {
+    lines.push(`${idx + 1}. ${image.originalName} (${image.mime}, ${Math.round(image.bytes / 1024)} КБ)`);
+    lines.push(`   Локальный путь: ${image.filePath}`);
+    lines.push(`   URL: ${image.url}`);
+  });
+  lines.push('', 'Перед ответом открой локальные файлы изображений и проанализируй их содержимое.');
+  return lines.join('\n');
+}
 
 async function listVisibleSeries(user) {
   if (isAdmin(user)) {
@@ -477,14 +573,31 @@ app.post('/api/players/:id/merge', requireAuth, async (req, res) => {
 // ---- Админ-чат (codex-агент, только spellful). Задачи в очередь admin_tasks, их выполняет хост-воркер. ----
 const requireAdmin = (req, res, next) =>
   (req.session.user && isAdmin(req.session.user)) ? next() : res.status(403).json({ error: 'forbidden' });
+
+app.get('/api/admin/uploads/:file', requireAdmin, (req, res) => {
+  const file = req.params.file;
+  if (!/^[A-Za-z0-9_.-]+$/.test(file)) return res.status(404).json({ error: 'not found' });
+  res.sendFile(path.join(ADMIN_UPLOAD_DIR, file), (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: 'not found' });
+  });
+});
+
 app.post('/api/admin/chat', requireAdmin, async (req, res) => {
-  const prompt = (req.body.prompt || '').trim();
-  if (!prompt) return res.status(400).json({ error: 'prompt required' });
-  const r = await pool.query(
-    "INSERT INTO admin_tasks (prompt, status) VALUES ($1,'pending') RETURNING id, prompt, status, created_at AS \"createdAt\"",
-    [prompt]
-  );
-  res.status(201).json(r.rows[0]);
+  try {
+    const promptText = (req.body.prompt || '').trim();
+    const hasImages = Array.isArray(req.body.images) && req.body.images.length > 0;
+    if (!promptText && !hasImages) return res.status(400).json({ error: 'prompt required' });
+
+    const images = await saveAdminChatImages(req.body.images);
+    const prompt = buildAdminChatPrompt(promptText, images);
+    const r = await pool.query(
+      "INSERT INTO admin_tasks (prompt, status) VALUES ($1,'pending') RETURNING id, prompt, status, created_at AS \"createdAt\"",
+      [prompt]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (e) {
+    res.status(e.statusCode || 500).json({ error: e.message });
+  }
 });
 app.get('/api/admin/tasks', requireAdmin, async (req, res) => {
   const r = await pool.query(

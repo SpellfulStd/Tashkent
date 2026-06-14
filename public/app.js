@@ -55,6 +55,12 @@ const api = {
   del(url) { return this.request(url, { method: 'DELETE' }); },
 };
 
+const ADMIN_CHAT_MAX_IMAGES = 5;
+const ADMIN_CHAT_IMAGE_MAX_SIDE = 1600;
+const ADMIN_CHAT_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
+const ADMIN_CHAT_IMAGE_QUALITY = 0.82;
+const ADMIN_CHAT_IMAGE_SECTION = '\n\n---\nФотографии, загруженные в чат:';
+
 // balls — счётчик победы; points — очки текущему; prevDelta — что прилетает предыдущему игроку в фиксированном порядке
 const EVENT_DEFS = {
   pocket_regular: { label: 'Обычный',       balls: 1, points: 1,  prevDelta: -1, keepTurn: true,  isPocket: true,  isDurak: false, isGolden: false },
@@ -881,7 +887,16 @@ function adminChatPanelHTML() {
     <section class="card admin-chat" id="adminChatPanel">
       <h2>Чат с разработчиком</h2>
       <div class="admin-chat-composer">
-        <textarea id="adminChatPrompt" rows="3" placeholder="Опишите задачу для разработчика"></textarea>
+        <div class="admin-chat-inputs">
+          <textarea id="adminChatPrompt" rows="3" placeholder="Опишите задачу для разработчика"></textarea>
+          <div class="admin-chat-attach-row">
+            <label class="admin-photo-picker" for="adminChatImages">Прикрепить фото</label>
+            <input class="admin-chat-file-input" id="adminChatImages" type="file" accept="image/*" multiple />
+            <button id="adminChatImagesClear" class="ghost small" type="button" hidden>Очистить</button>
+            <span class="muted">до ${ADMIN_CHAT_MAX_IMAGES} фото</span>
+          </div>
+          <div class="admin-chat-preview" id="adminChatImagePreview" hidden></div>
+        </div>
         <button id="adminChatSend" class="shrink">Отправить</button>
       </div>
       <div class="admin-chat-feed" id="adminChatFeed">
@@ -906,19 +921,128 @@ function adminStatusLabel(status) {
   })[status] || status || 'pending';
 }
 
+function fileSizeLabel(bytes) {
+  if (!Number.isFinite(bytes)) return '';
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} МБ`;
+  return `${Math.max(1, Math.round(bytes / 1024))} КБ`;
+}
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('Не удалось прочитать файл'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Не удалось открыть изображение'));
+    image.src = src;
+  });
+}
+
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('Не удалось сжать изображение'));
+    }, type, quality);
+  });
+}
+
+function jpegFileName(name) {
+  const stem = String(name || 'photo').replace(/\.[^.]+$/, '') || 'photo';
+  return `${stem}.jpg`;
+}
+
+async function prepareAdminChatImage(file) {
+  if (!file.type || !file.type.startsWith('image/')) {
+    throw new Error('Можно прикреплять только изображения');
+  }
+
+  const dataUrl = await readFileAsDataURL(file);
+  try {
+    const image = await loadImageElement(dataUrl);
+    const width = image.naturalWidth || image.width || 1;
+    const height = image.naturalHeight || image.height || 1;
+    const scale = Math.min(1, ADMIN_CHAT_IMAGE_MAX_SIDE / Math.max(width, height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    let blob = null;
+    for (const quality of [ADMIN_CHAT_IMAGE_QUALITY, 0.72, 0.62, 0.52]) {
+      blob = await canvasToBlob(canvas, 'image/jpeg', quality);
+      if (blob.size <= ADMIN_CHAT_IMAGE_MAX_BYTES) break;
+    }
+    if (!blob || blob.size > ADMIN_CHAT_IMAGE_MAX_BYTES) {
+      throw new Error(`Фото ${file.name} слишком большое после сжатия`);
+    }
+    return {
+      name: jpegFileName(file.name),
+      type: 'image/jpeg',
+      data: await readFileAsDataURL(blob),
+    };
+  } catch (err) {
+    const canSendOriginal = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type) &&
+      file.size <= ADMIN_CHAT_IMAGE_MAX_BYTES;
+    if (canSendOriginal) return { name: file.name || 'photo', type: file.type, data: dataUrl };
+    throw err;
+  }
+}
+
+async function prepareAdminChatImages(files) {
+  if (files.length > ADMIN_CHAT_MAX_IMAGES) {
+    throw new Error(`Можно прикрепить не больше ${ADMIN_CHAT_MAX_IMAGES} фото`);
+  }
+  const images = [];
+  for (const file of files) images.push(await prepareAdminChatImage(file));
+  return images;
+}
+
+function adminTaskPromptText(prompt) {
+  const value = String(prompt || '');
+  const idx = value.indexOf(ADMIN_CHAT_IMAGE_SECTION);
+  return idx >= 0 ? value.slice(0, idx) : value;
+}
+
+function adminTaskImages(prompt) {
+  return [...String(prompt || '').matchAll(/^\s*URL:\s*(\/api\/admin\/uploads\/[A-Za-z0-9_.-]+)/gm)]
+    .map((m) => m[1]);
+}
+
 function adminTasksHTML(tasks) {
   if (!tasks.length) return '<p class="empty-state">Задач пока нет.</p>';
   return tasks.map((task) => {
     const status = adminStatusLabel(task.status);
     const statusClass = ['pending', 'running', 'done', 'error'].includes(status) ? status : 'pending';
     const prompt = task.prompt || '';
+    const promptText = adminTaskPromptText(prompt);
+    const images = adminTaskImages(prompt);
     const output = task.output || task.error || '';
     return `
       <article class="chat-task">
         <div class="chat-line user">
           <div class="chat-bubble">
             <div class="chat-meta">Вы</div>
-            <div>${esc(prompt)}</div>
+            <div>${esc(promptText)}</div>
+            ${images.length ? `
+              <div class="chat-attachments">
+                ${images.map((url, idx) => `
+                  <a href="${esc(url)}" target="_blank" rel="noopener" class="chat-attachment">
+                    <img src="${esc(url)}" alt="Фото ${idx + 1}" loading="lazy" />
+                  </a>
+                `).join('')}
+              </div>
+            ` : ''}
           </div>
         </div>
         <div class="chat-line dev">
@@ -941,6 +1065,44 @@ function setupAdminChat(token) {
   const promptInput = document.getElementById('adminChatPrompt');
   const sendBtn = document.getElementById('adminChatSend');
   const feed = document.getElementById('adminChatFeed');
+  const imageInput = document.getElementById('adminChatImages');
+  const imagePreview = document.getElementById('adminChatImagePreview');
+  const imageClearBtn = document.getElementById('adminChatImagesClear');
+  let previewUrls = [];
+
+  function selectedImageFiles() {
+    return Array.from(imageInput.files || []);
+  }
+
+  function clearPreviewUrls() {
+    previewUrls.forEach((url) => URL.revokeObjectURL(url));
+    previewUrls = [];
+  }
+
+  function renderImagePreview() {
+    clearPreviewUrls();
+    const files = selectedImageFiles();
+    imageClearBtn.hidden = files.length === 0;
+    if (!files.length) {
+      imagePreview.hidden = true;
+      imagePreview.innerHTML = '';
+      return;
+    }
+
+    imagePreview.hidden = false;
+    imagePreview.innerHTML = files.slice(0, ADMIN_CHAT_MAX_IMAGES).map((file) => {
+      const url = URL.createObjectURL(file);
+      previewUrls.push(url);
+      return `
+        <div class="admin-chat-thumb">
+          <img src="${esc(url)}" alt="" />
+          <span>${esc(file.name || 'photo')} · ${esc(fileSizeLabel(file.size))}</span>
+        </div>
+      `;
+    }).join('') + (files.length > ADMIN_CHAT_MAX_IMAGES
+      ? `<p class="muted">Будут отправлены только после уменьшения выбора до ${ADMIN_CHAT_MAX_IMAGES} фото.</p>`
+      : '');
+  }
 
   async function loadTasks() {
     try {
@@ -955,19 +1117,35 @@ function setupAdminChat(token) {
 
   async function sendPrompt() {
     const prompt = promptInput.value.trim();
-    if (!prompt) return;
+    const files = selectedImageFiles();
+    if (!prompt && !files.length) return;
     sendBtn.disabled = true;
+    imageInput.disabled = true;
+    imageClearBtn.disabled = true;
+    const originalSendText = sendBtn.textContent;
+    sendBtn.textContent = files.length ? 'Отправка фото…' : 'Отправка…';
     try {
-      await api.post('/api/admin/chat', { prompt });
+      const images = await prepareAdminChatImages(files);
+      await api.post('/api/admin/chat', { prompt, images });
       promptInput.value = '';
+      imageInput.value = '';
+      renderImagePreview();
       await loadTasks();
     } catch (err) {
       showToast(err.message || 'Не удалось отправить сообщение');
     } finally {
       sendBtn.disabled = false;
+      imageInput.disabled = false;
+      imageClearBtn.disabled = false;
+      sendBtn.textContent = originalSendText;
     }
   }
 
+  imageInput.addEventListener('change', renderImagePreview);
+  imageClearBtn.addEventListener('click', () => {
+    imageInput.value = '';
+    renderImagePreview();
+  });
   sendBtn.addEventListener('click', sendPrompt);
   promptInput.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') sendPrompt();
