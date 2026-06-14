@@ -3,6 +3,7 @@ const session = require('express-session');
 const PgSession = require('connect-pg-simple')(session);
 const { Pool } = require('pg');
 const { Issuer, generators } = require('openid-client');
+const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const WebSocket = require('ws');
@@ -134,9 +135,37 @@ const myPlayer = async (sub) =>
   (await pool.query('SELECT id FROM players WHERE account_sub=$1', [sub])).rows[0] || null;
 const isAdmin = (user) => !!user && user.username === 'spellful';
 
+async function listVisibleSeries(user) {
+  if (isAdmin(user)) {
+    return (await pool.query(
+      'SELECT id, name, status, created_at AS "createdAt", finished_at AS "finishedAt" FROM series ORDER BY created_at DESC'
+    )).rows;
+  }
+  const me = await myPlayer(user.sub);
+  if (!me) return [];
+  return (await pool.query(
+    `SELECT DISTINCT s.id, s.name, s.status, s.created_at AS "createdAt", s.finished_at AS "finishedAt"
+     FROM series s
+     JOIN games g ON g.series_id=s.id
+     JOIN game_players gp ON gp.game_id=g.id
+     WHERE gp.player_id=$1
+     ORDER BY s.created_at DESC`,
+    [me.id]
+  )).rows;
+}
+
 // ---- Me / accounts / active ----
 app.get('/api/me', requireAuth, async (req, res) => {
   res.json({ user: req.session.user, player: await myPlayer(req.session.user.sub) });
+});
+
+app.get('/api/changelog', requireAuth, async (_req, res) => {
+  try {
+    const markdown = await fs.promises.readFile(path.join(__dirname, 'CHANGELOG.md'), 'utf8');
+    res.json({ markdown });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // аккаунты, которые уже входили в приложение — для выбора при создании игрока
@@ -206,10 +235,7 @@ app.delete('/api/players/:id', requireAuth, async (req, res) => {
 
 // ---- Series ----
 app.get('/api/series', requireAuth, async (req, res) => {
-  const r = await pool.query(
-    'SELECT id, name, status, created_at AS "createdAt", finished_at AS "finishedAt" FROM series ORDER BY created_at DESC'
-  );
-  res.json(r.rows);
+  res.json(await listVisibleSeries(req.session.user));
 });
 app.post('/api/series', requireAuth, async (req, res) => {
   const r = await pool.query(

@@ -81,6 +81,18 @@ function esc(value) {
 
 function signed(n) { return n > 0 ? `+${n}` : `${n}`; }
 function prevIndex(idx, n) { return (idx - 1 + n) % n; }
+function sameOrder(a, b) {
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+
+function shuffleCopy(items) {
+  const arr = [...items];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
 
 function fmtDate(iso) {
   if (!iso) return '—';
@@ -102,6 +114,122 @@ function fmtDuration(startIso, endIso) {
   const m = Math.floor(ms / 60000);
   const h = Math.floor(m / 60);
   return h > 0 ? `${h}ч ${m % 60}м` : `${m}м`;
+}
+
+function inlineMarkdown(line) {
+  return esc(line)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+}
+
+function markdownToHTML(markdown) {
+  const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
+  let html = '';
+  let listOpen = false;
+  let codeOpen = false;
+  let codeLines = [];
+
+  function closeList() {
+    if (listOpen) {
+      html += '</ul>';
+      listOpen = false;
+    }
+  }
+
+  function closeCode() {
+    if (codeOpen) {
+      html += `<pre><code>${esc(codeLines.join('\n'))}</code></pre>`;
+      codeLines = [];
+      codeOpen = false;
+    }
+  }
+
+  for (const line of lines) {
+    if (line.trim().startsWith('```')) {
+      if (codeOpen) closeCode();
+      else {
+        closeList();
+        codeOpen = true;
+        codeLines = [];
+      }
+      continue;
+    }
+    if (codeOpen) {
+      codeLines.push(line);
+      continue;
+    }
+    if (!line.trim()) {
+      closeList();
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      html += `<h${level}>${inlineMarkdown(heading[2])}</h${level}>`;
+      continue;
+    }
+
+    const item = line.match(/^[-*]\s+(.+)$/);
+    if (item) {
+      if (!listOpen) {
+        html += '<ul>';
+        listOpen = true;
+      }
+      html += `<li>${inlineMarkdown(item[1])}</li>`;
+      continue;
+    }
+
+    closeList();
+    html += `<p>${inlineMarkdown(line)}</p>`;
+  }
+
+  closeCode();
+  closeList();
+  return html || '<p class="empty-state">Change log пока пуст.</p>';
+}
+
+function randomPlayerOrder(selectedOrder, prevGames) {
+  const ids = [...new Set(selectedOrder)];
+  if (ids.length < 2) return { order: ids };
+
+  const previousOrder = prevGames[0] ? prevGames[0].players.map((p) => p.id) : [];
+  const blockedFirstIds = new Set(
+    prevGames.slice(0, 2)
+      .map((g) => g.players[0] && g.players[0].id)
+      .filter((id) => id && ids.includes(id))
+  );
+  const allowedFirstIds = ids.filter((id) => !blockedFirstIds.has(id));
+  if (allowedFirstIds.length === 0) return { order: null, reason: 'first' };
+
+  const isValid = (order, allowSameCurrent = false) =>
+    allowedFirstIds.includes(order[0]) &&
+    !sameOrder(order, previousOrder) &&
+    (allowSameCurrent || !sameOrder(order, ids));
+
+  for (let i = 0; i < 400; i++) {
+    const order = shuffleCopy(ids);
+    if (isValid(order)) return { order };
+  }
+
+  for (const firstId of shuffleCopy(allowedFirstIds)) {
+    const rest = shuffleCopy(ids.filter((id) => id !== firstId));
+    const order = [firstId, ...rest];
+    if (isValid(order)) return { order };
+    for (let i = 0; i < rest.length - 1; i++) {
+      const swapped = [...rest];
+      [swapped[i], swapped[i + 1]] = [swapped[i + 1], swapped[i]];
+      const candidate = [firstId, ...swapped];
+      if (isValid(candidate)) return { order: candidate };
+    }
+  }
+
+  for (let i = 0; i < 100; i++) {
+    const order = shuffleCopy(ids);
+    if (isValid(order, true)) return { order };
+  }
+  return { order: null, reason: 'repeat' };
 }
 
 function showToast(message) {
@@ -427,6 +555,7 @@ const routes = [
   { match: /^#\/new-game\/(.+)$/, render: renderNewGame },
   { match: /^#\/game\/(.+)$/, render: renderLiveGame },
   { match: /^#\/history$/, render: renderHistory },
+  { match: /^#\/changelog$/, render: renderChangelog },
   { match: /^#\/games\/(.+)$/, render: renderGameDetail },
 ];
 
@@ -926,6 +1055,8 @@ async function renderNewGame(match) {
         `).join('');
 
     document.getElementById('startBtn').disabled = playerCount < 2;
+    const randomBtn = document.getElementById('randomOrderBtn');
+    if (randomBtn) randomBtn.disabled = playerCount < 2;
     document.getElementById('countHint').textContent = `Игроков: ${playerCount}`;
 
     document.querySelectorAll('[data-add]').forEach((el) => el.addEventListener('click', () => {
@@ -960,6 +1091,10 @@ async function renderNewGame(match) {
     <div class="card">
       <h2>Порядок игроков <span class="muted" id="countHint"></span></h2>
       <div id="selectedList"></div>
+      <div class="toolbar order-toolbar">
+        <button class="ghost small" id="randomOrderBtn" disabled>Случайный порядок</button>
+        <span class="muted">Первый не повторяет две прошлые игры, порядок не повторяет последнюю.</span>
+      </div>
       <h3>Доступные</h3>
       <div id="unselectedList"></div>
 
@@ -988,6 +1123,18 @@ async function renderNewGame(match) {
     </div>
   `;
   refresh();
+
+  document.getElementById('randomOrderBtn').addEventListener('click', () => {
+    const result = randomPlayerOrder(gameState.selectedOrder, prevGames);
+    if (!result.order) {
+      showToast(result.reason === 'first'
+        ? 'Нет доступного первого игрока по правилу двух прошлых игр'
+        : 'Не удалось подобрать новый порядок');
+      return;
+    }
+    gameState.selectedOrder = result.order;
+    refresh();
+  });
 
   document.getElementById('targetVal').addEventListener('input', (e) => {
     const v = parseInt(e.target.value, 10);
@@ -1288,6 +1435,17 @@ async function renderHistory() {
     ${series.length === 0 ? '<p class="empty-state">Пусто.</p>' :
       series.map((s) => seriesRowHTML(s, games.filter((g) => g.seriesId === s.id).length)).join('')}
     ${orphan.length > 0 ? `<h2>Игры без серии (${orphan.length})</h2>${orphan.map(gameRowHTML).join('')}` : ''}
+  `;
+}
+
+async function renderChangelog() {
+  const data = await api.get('/api/changelog');
+  app.innerHTML = `
+    <a href="#/" class="back-link">← Главная</a>
+    <h1>Change log</h1>
+    <div class="card changelog">
+      ${markdownToHTML(data.markdown || '')}
+    </div>
   `;
 }
 
