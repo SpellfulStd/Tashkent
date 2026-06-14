@@ -7,15 +7,20 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header>
-    <a href="#/" class="logo">🎱 Ташкент</a>
-    <nav>
+  <header class="site-header">
+    <a href="#/" class="logo" aria-label="Ташкент — главная"><span class="logo-mark">🎱</span><span>Ташкент</span></a>
+    <nav class="main-nav" aria-label="Основная навигация">
       <a href="#/" data-nav="home">Главная</a>
       <a href="#/history" data-nav="history">История</a>
       <a href="#/players" data-nav="players">Игроки</a>
     </nav>
+    <div class="user-bar" id="userBar">
+      <span id="userName" class="muted">Загрузка…</span>
+      <a href="/logout" class="logout-link">Выйти</a>
+    </div>
   </header>
   <main id="app"></main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>
 </html>
