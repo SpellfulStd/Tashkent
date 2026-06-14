@@ -668,10 +668,15 @@ label {
 }
 
 .player-card .points,
+.player-card .mutual-points,
 .duraks {
   color: var(--muted);
   font-size: 14px;
   font-weight: 700;
+}
+
+.player-card .mutual-points {
+  color: #bbecff;
 }
 
 .turn-badge {
@@ -869,6 +874,13 @@ label {
   color: #dff6ff;
   font-size: 18px;
   font-weight: 900;
+}
+
+.sheet-mutual {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .action-grid {
@@ -1115,7 +1127,7 @@ label {
 
 table.totals {
   width: 100%;
-  min-width: 640px;
+  min-width: 760px;
   border-collapse: collapse;
   font-size: 14px;
 }
