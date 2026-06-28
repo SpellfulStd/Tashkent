@@ -21,6 +21,19 @@ const ADMIN_CHAT_IMAGE_TYPES = new Map([
   ['image/webp', '.webp'],
   ['image/gif', '.gif'],
 ]);
+const SPELLFUL_LAST_BALL_GAME_ID = '79d9f99a-4820-4d29-b9f4-d630cf3ef607';
+const SERVER_EVENT_DEFS = {
+  pocket_regular: { balls: 1, points: 1,  prevDelta: -1, isDurak: false, isGolden: false, isPocket: true },
+  pocket_duplet:  { balls: 1, points: 2,  prevDelta: -2, isDurak: false, isGolden: false, isPocket: true },
+  pocket_pants:   { balls: 2, points: 3,  prevDelta: -3, isDurak: false, isGolden: false, isPocket: true },
+  pocket_durak:   { balls: 1, points: 1,  prevDelta: -1, isDurak: true,  isGolden: false, isPocket: true },
+  penalty:        { balls: 0, points: -1, prevDelta:  1, isDurak: false, isGolden: false, isPocket: false },
+  miss:           { balls: 0, points: 0,  prevDelta:  0, isDurak: false, isGolden: false, isPocket: false },
+  set_turn:       { balls: 0, points: 0,  prevDelta:  0, isDurak: false, isGolden: false, isPocket: false },
+  golden_regular: { balls: 1, points: 0, prevDelta: 0, isDurak: false, isGolden: true, isPocket: true, goldenTier: 0 },
+  golden_duplet:  { balls: 1, points: 0, prevDelta: 0, isDurak: false, isGolden: true, isPocket: true, goldenTier: 1 },
+  golden_pants:   { balls: 2, points: 0, prevDelta: 0, isDurak: false, isGolden: true, isPocket: true, goldenTier: 2 },
+};
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
@@ -209,6 +222,105 @@ const pid = (v, set) => (v && set.has(v) ? v : null);
 const myPlayer = async (sub) =>
   (await pool.query('SELECT id FROM players WHERE account_sub=$1', [sub])).rows[0] || null;
 const isAdmin = (user) => !!user && user.username === 'spellful';
+const repairPrevIndex = (idx, n) => (idx - 1 + n) % n;
+
+function computeServerGameState(game) {
+  const scores = {};
+  game.players.forEach((p) => { scores[p.id] = { balls: 0, points: 0, duraks: 0 }; });
+  const n = game.players.length;
+
+  for (const ev of game.events || []) {
+    const def = SERVER_EVENT_DEFS[ev.type];
+    if (!def) continue;
+    const idx = game.players.findIndex((p) => p.id === ev.playerId);
+    if (idx < 0) continue;
+    const s = scores[ev.playerId];
+
+    if (def.isGolden) {
+      const tier = def.goldenTier || 0;
+      s.balls += def.balls;
+      s.points += n + tier;
+      if (n > 1) {
+        const prevId = game.players[repairPrevIndex(idx, n)].id;
+        scores[prevId].points -= 2 + tier;
+        game.players.forEach((p) => {
+          if (p.id !== ev.playerId && p.id !== prevId) scores[p.id].points -= 1;
+        });
+      }
+    } else {
+      s.balls = Math.max(0, s.balls + def.balls);
+      s.points += def.points;
+      if (def.isDurak) s.duraks += 1;
+      if (def.prevDelta && n > 1) {
+        const prevId = game.players[repairPrevIndex(idx, n)].id;
+        if (prevId !== ev.playerId) scores[prevId].points += def.prevDelta;
+      }
+    }
+  }
+
+  let pointsLeader = null;
+  let maxPts = -Infinity;
+  for (const p of game.players) {
+    if (scores[p.id].points > maxPts) {
+      maxPts = scores[p.id].points;
+      pointsLeader = p;
+    }
+  }
+  const tiedTop = game.players.filter((p) => scores[p.id].points === maxPts);
+  if (tiedTop.length !== 1) pointsLeader = null;
+  return { scores, pointsLeader };
+}
+
+function lastPocketEvent(game) {
+  const events = game.events || [];
+  for (let i = events.length - 1; i >= 0; i--) {
+    const def = SERVER_EVENT_DEFS[events[i].type];
+    if (def && def.isPocket) return events[i];
+  }
+  return null;
+}
+
+async function repairSpellfulLastBallWinner() {
+  const game = await loadGame(SPELLFUL_LAST_BALL_GAME_ID);
+  if (!game || game.status !== 'finished') return;
+
+  const spellful = game.players.find((p) => String(p.name || '').trim().toLowerCase() === 'spellful');
+  if (!spellful) {
+    console.warn('Data repair skipped: Spellful is not in game', SPELLFUL_LAST_BALL_GAME_ID);
+    return;
+  }
+
+  const lastPocket = lastPocketEvent(game);
+  if (!lastPocket || lastPocket.playerId !== spellful.id) {
+    console.warn('Data repair skipped: last pocket is not Spellful in game', SPELLFUL_LAST_BALL_GAME_ID);
+    return;
+  }
+
+  const st = computeServerGameState(game);
+  const pointsLeaderId = st.pointsLeader ? st.pointsLeader.id : null;
+  const r = await pool.query(
+    `UPDATE games
+       SET winner_player_id=$2, points_leader_player_id=$3, final_scores=$4::jsonb
+     WHERE id=$1
+       AND (
+         winner_player_id IS DISTINCT FROM $2
+         OR points_leader_player_id IS DISTINCT FROM $3
+         OR final_scores IS DISTINCT FROM $4::jsonb
+       )`,
+    [SPELLFUL_LAST_BALL_GAME_ID, spellful.id, pointsLeaderId, JSON.stringify(st.scores)]
+  );
+  if (r.rowCount) {
+    console.log('Data repair applied: Spellful winner for game', SPELLFUL_LAST_BALL_GAME_ID);
+  }
+}
+
+async function runStartupDataRepairs() {
+  try {
+    await repairSpellfulLastBallWinner();
+  } catch (e) {
+    console.error('Startup data repair failed:', e.message);
+  }
+}
 
 function safeAdminUploadName(name, mime) {
   const ext = ADMIN_CHAT_IMAGE_TYPES.get(mime) || '.jpg';
@@ -623,6 +735,7 @@ server.on('upgrade', (req, socket, head) => {
   });
 });
 
-initOidc().then(() => {
+initOidc().then(async () => {
+  await runStartupDataRepairs();
   server.listen(PORT, () => console.log(`Ташкент v2 на :${PORT}`));
 }).catch(e => { console.error('OIDC init failed:', e); process.exit(1); });

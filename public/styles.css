@@ -976,19 +976,23 @@ label {
   box-shadow: inset 0 0 0 1px var(--accent-line);
 }
 
-.sheet-initial {
+.sheet-player-name {
   position: relative;
+  display: block;
+  max-width: 100%;
   color: var(--text);
-  font-size: 22px;
+  font-size: 13px;
   font-weight: 650;
-  line-height: 1;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
 }
 
 .sheet-crown {
-  position: absolute;
-  top: -14px;
-  right: -18px;
-  font-size: 14px;
+  display: inline-block;
+  margin-left: 3px;
+  font-size: 12px;
+  line-height: 1;
+  vertical-align: 1px;
 }
 
 .sheet-balls {
@@ -1063,9 +1067,18 @@ label {
   position: absolute;
   right: 3px;
   bottom: 2px;
-  font-size: 8px;
+  max-width: 16px;
+  overflow: hidden;
+  font-size: 7px;
   font-weight: 700;
   line-height: 1;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.sheet-settled-letter {
+  top: 2px;
+  bottom: auto;
 }
 
 .score-sheet tfoot th,
@@ -1581,14 +1594,12 @@ table.totals th:not(:first-child) {
   padding: 4px;
 }
 
-.live-game .sheet-initial {
-  font-size: 19px;
+.live-game .sheet-player-name {
+  font-size: 11px;
 }
 
 .live-game .sheet-crown {
-  top: -12px;
-  right: -15px;
-  font-size: 12px;
+  font-size: 10px;
 }
 
 .live-game .sheet-balls {

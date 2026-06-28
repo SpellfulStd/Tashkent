@@ -468,11 +468,18 @@ function setGameDetailView(view) {
   }
 }
 
+const SCORE_SHEET_EVENT_MARKS = {
+  pocket_durak: "'",
+  pocket_duplet: 'Дп',
+  pocket_pants: 'Ш',
+  penalty: 'Шт',
+  golden_regular: 'З',
+  golden_duplet: 'ЗД',
+  golden_pants: 'ЗШ',
+};
+
 function scoreSheetEventLetter(type) {
-  if (type === 'pocket_regular' || type === 'miss' || type === 'set_turn') return '';
-  const def = EVENT_DEFS[type];
-  if (!def) return '';
-  return (def.label || type).trim().charAt(0).toLocaleUpperCase('ru-RU');
+  return SCORE_SHEET_EVENT_MARKS[type] || '';
 }
 
 function eventPointDeltas(game, ev) {
@@ -512,6 +519,7 @@ function appendScoreMark(marks, mark) {
   for (let i = 0; i < marks.length; i++) {
     if (!marks[i].settled && marks[i].sign !== mark.sign) {
       marks[i].settled = true;
+      if (mark.letter) marks[i].settledByLetter = mark.letter;
       return;
     }
   }
@@ -576,13 +584,9 @@ function scoreMarkHTML(mark) {
     <span class="${classes}">
       <span class="sheet-sign">${mark.sign > 0 ? '+' : '-'}</span>
       ${mark.letter ? `<span class="sheet-letter">${esc(mark.letter)}</span>` : ''}
+      ${mark.settledByLetter ? `<span class="sheet-letter sheet-settled-letter">${esc(mark.settledByLetter)}</span>` : ''}
     </span>
   `;
-}
-
-function playerInitial(name) {
-  const trimmed = String(name || '?').trim();
-  return (trimmed.charAt(0) || '?').toLocaleUpperCase('ru-RU');
 }
 
 function uniqueBallsLeader(game, scores) {
@@ -652,7 +656,7 @@ function scoreSheetHTML(game, st, { canControl, isFinished }) {
   return `
     <div class="score-sheet card">
       <div class="table-scroll">
-        <table style="--sheet-min-width: ${game.players.length * 76}px;">
+        <table style="--sheet-min-width: ${game.players.length * 108}px;">
           <thead>
             <tr>
               ${game.players.map((p) => {
@@ -662,7 +666,7 @@ function scoreSheetHTML(game, st, { canControl, isFinished }) {
                 return `
                   <th class="${isTurn ? 'sheet-active-player' : ''}">
                     <div class="sheet-player-head ${canControl ? 'clickable' : ''}" title="${esc(p.name)}" ${canControl ? `data-pick="${esc(p.id)}"` : ''}>
-                      <span class="sheet-initial">${esc(playerInitial(p.name))}${isLeader ? '<span class="sheet-crown">👑</span>' : ''}</span>
+                      <span class="sheet-player-name">${esc(p.name)}${isLeader ? '<span class="sheet-crown">👑</span>' : ''}</span>
                       <span class="sheet-balls">${s.balls}/${esc(game.targetBalls)}</span>
                     </div>
                   </th>
