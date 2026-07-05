@@ -209,3 +209,23 @@ Aggregates all **finished** games in a series per player:
 - Frontend re-fetches from API on every route change (no client-side state between views)
 - Undo pops the last event from `game.events` and resets `status`/`firstWinnerId` if needed
 - `set_turn` events allow manually reassigning whose turn it is without scoring
+
+---
+
+## Planning Poker module (public, no auth)
+
+Standalone page at `/poker` (create game) and `/poker/:roomId` (play). No OIDC:
+a visitor enters a name, which is stored in `localStorage` (`poker:<roomId>`) and
+persisted server-side in `poker_participants` — names appear in game results.
+
+- Frontend: `public/poker.html` + `public/poker.js` (vanilla JS, reuses `styles.css`)
+- Tables (created on startup by `initPokerSchema()` in `server.js`):
+  `poker_rooms`, `poker_participants`, `poker_issues`, `poker_votes`
+- Issues input accepts links/titles separated by newlines **or** commas
+  (`parsePokerIssues`); entries starting with `http(s)://` become clickable links
+- Votes are hidden until the room is `revealed`; voting after reveal returns 409
+- Real-time: unauthenticated WS channel `/ws/poker?room=<uuid>` broadcasts
+  `{type:'sync'}`; clients refetch `GET /api/poker/rooms/:id?me=<participantId>`
+- Key routes: `POST /api/poker/rooms`, `POST .../join`, `POST .../issues`,
+  `POST .../current`, `POST /api/poker/issues/:id/vote`, `POST .../reveal`,
+  `POST .../reset`, `POST /api/poker/issues/:id/estimate`, `GET .../results`

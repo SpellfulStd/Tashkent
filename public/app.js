@@ -76,6 +76,20 @@ const EVENT_DEFS = {
   golden_pants:   { label: 'Золотые штаны',  balls: 2, points: 0, prevDelta: 0, keepTurn: true, isPocket: true,  isDurak: false, isGolden: true, goldenTier: 2 },
 };
 
+const GOLDEN_AS_REGULAR_EVENT = {
+  golden_regular: 'pocket_regular',
+  golden_duplet: 'pocket_duplet',
+  golden_pants: 'pocket_pants',
+};
+
+function effectiveEventType(type, firstWinner) {
+  return firstWinner && GOLDEN_AS_REGULAR_EVENT[type] ? GOLDEN_AS_REGULAR_EVENT[type] : type;
+}
+
+function effectiveEventDef(type, firstWinner) {
+  return EVENT_DEFS[effectiveEventType(type, firstWinner)];
+}
+
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
     '&': '&amp;',
@@ -281,7 +295,7 @@ function computeState(game) {
   const targetBalls = Number(game.targetBalls) || 0;
 
   for (const ev of game.events || []) {
-    const def = EVENT_DEFS[ev.type];
+    const def = effectiveEventDef(ev.type, firstWinner);
     if (!def) continue;
     const idx = game.players.findIndex((p) => p.id === ev.playerId);
     if (idx < 0) continue;
@@ -338,7 +352,7 @@ function computeState(game) {
     pointsLeader,
     prevPlayer,
     totalBalls,
-    isGoldenPhase: totalBalls === 14,
+    isGoldenPhase: totalBalls === 14 && !firstWinner,
     allBallsGone: totalBalls >= 15,
   };
 }
@@ -420,17 +434,31 @@ function visibleEvents(game) {
 
 function eventLogHTML(game, events = visibleEvents(game)) {
   if (events.length === 0) return '<p class="empty-state">Пусто.</p>';
-  return [...events].reverse().map((ev) => {
+  const scores = {};
+  game.players.forEach((p) => { scores[p.id] = { balls: 0 }; });
+  let firstWinner = null;
+  const targetBalls = Number(game.targetBalls) || 0;
+  const rows = events.map((ev) => {
     const p = game.players.find((x) => x.id === ev.playerId);
-    const def = EVENT_DEFS[ev.type];
-    return `
+    const idx = game.players.findIndex((x) => x.id === ev.playerId);
+    const def = effectiveEventDef(ev.type, firstWinner);
+    const row = `
       <div class="item">
         <span class="who">${esc(p ? p.name : '?')}</span>
         <span class="what">${esc(def ? def.label : ev.type)}</span>
         <span class="delta">${esc(eventDelta(def, game.players.length))}</span>
       </div>
     `;
-  }).join('');
+    if (def && idx >= 0 && scores[ev.playerId]) {
+      const s = scores[ev.playerId];
+      s.balls = Math.max(0, s.balls + def.balls);
+      if (!firstWinner && def.balls > 0 && s.balls >= targetBalls) {
+        firstWinner = game.players[idx];
+      }
+    }
+    return row;
+  });
+  return rows.reverse().join('');
 }
 
 const LIVE_GAME_VIEW_KEY = 'tashkent.liveGameView';
@@ -482,9 +510,9 @@ function scoreSheetEventLetter(type) {
   return SCORE_SHEET_EVENT_MARKS[type] || '';
 }
 
-function eventPointDeltas(game, ev) {
+function eventPointDeltas(game, ev, firstWinner = null) {
   const deltas = new Map();
-  const def = EVENT_DEFS[ev.type];
+  const def = effectiveEventDef(ev.type, firstWinner);
   const n = game.players.length;
   const idx = game.players.findIndex((p) => p.id === ev.playerId);
   if (!def || idx < 0) return deltas;
@@ -555,11 +583,17 @@ function scoreSheetCaptionHTML(hasSettled) {
 
 function buildScoreSheetColumns(game) {
   const columns = {};
+  const scores = {};
   game.players.forEach((p) => { columns[p.id] = []; });
+  game.players.forEach((p) => { scores[p.id] = { balls: 0 }; });
+  let firstWinner = null;
+  const targetBalls = Number(game.targetBalls) || 0;
 
   visibleEvents(game).forEach((ev) => {
-    const letter = scoreSheetEventLetter(ev.type);
-    const deltas = eventPointDeltas(game, ev);
+    const eventType = effectiveEventType(ev.type, firstWinner);
+    const def = EVENT_DEFS[eventType];
+    const letter = scoreSheetEventLetter(eventType);
+    const deltas = eventPointDeltas(game, ev, firstWinner);
 
     game.players.forEach((p) => {
       const delta = deltas.get(p.id) || 0;
@@ -568,6 +602,15 @@ function buildScoreSheetColumns(game) {
         appendScoreMark(columns[p.id], { sign, letter, isPenalty: ev.type === 'penalty' });
       }
     });
+
+    const idx = game.players.findIndex((p) => p.id === ev.playerId);
+    if (def && idx >= 0 && scores[ev.playerId]) {
+      const s = scores[ev.playerId];
+      s.balls = Math.max(0, s.balls + def.balls);
+      if (!firstWinner && def.balls > 0 && s.balls >= targetBalls) {
+        firstWinner = game.players[idx];
+      }
+    }
   });
 
   return columns;

@@ -34,6 +34,19 @@ const SERVER_EVENT_DEFS = {
   golden_duplet:  { balls: 1, points: 0, prevDelta: 0, isDurak: false, isGolden: true, isPocket: true, goldenTier: 1 },
   golden_pants:   { balls: 2, points: 0, prevDelta: 0, isDurak: false, isGolden: true, isPocket: true, goldenTier: 2 },
 };
+const SERVER_GOLDEN_AS_REGULAR_EVENT = {
+  golden_regular: 'pocket_regular',
+  golden_duplet: 'pocket_duplet',
+  golden_pants: 'pocket_pants',
+};
+
+function serverEffectiveEventType(type, firstWinner) {
+  return firstWinner && SERVER_GOLDEN_AS_REGULAR_EVENT[type] ? SERVER_GOLDEN_AS_REGULAR_EVENT[type] : type;
+}
+
+function serverEffectiveEventDef(type, firstWinner) {
+  return SERVER_EVENT_DEFS[serverEffectiveEventType(type, firstWinner)];
+}
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
@@ -228,9 +241,11 @@ function computeServerGameState(game) {
   const scores = {};
   game.players.forEach((p) => { scores[p.id] = { balls: 0, points: 0, duraks: 0 }; });
   const n = game.players.length;
+  let firstWinner = null;
+  const targetBalls = Number(game.targetBalls) || 0;
 
   for (const ev of game.events || []) {
-    const def = SERVER_EVENT_DEFS[ev.type];
+    const def = serverEffectiveEventDef(ev.type, firstWinner);
     if (!def) continue;
     const idx = game.players.findIndex((p) => p.id === ev.playerId);
     if (idx < 0) continue;
@@ -256,6 +271,10 @@ function computeServerGameState(game) {
         if (prevId !== ev.playerId) scores[prevId].points += def.prevDelta;
       }
     }
+
+    if (!firstWinner && def.balls > 0 && s.balls >= targetBalls) {
+      firstWinner = game.players[idx];
+    }
   }
 
   let pointsLeader = null;
@@ -268,7 +287,7 @@ function computeServerGameState(game) {
   }
   const tiedTop = game.players.filter((p) => scores[p.id].points === maxPts);
   if (tiedTop.length !== 1) pointsLeader = null;
-  return { scores, pointsLeader };
+  return { scores, pointsLeader, firstWinner };
 }
 
 function lastPocketEvent(game) {
@@ -626,11 +645,17 @@ app.post('/api/games/:id/events', requireAuth, async (req, res) => {
   const g = (await pool.query('SELECT status FROM games WHERE id=$1', [gameId])).rows[0];
   if (!g) return res.status(404).json({ error: 'not found' });
   if (g.status !== 'active') return res.status(409).json({ error: 'game not active' });
+  let eventType = type;
+  if (SERVER_GOLDEN_AS_REGULAR_EVENT[type]) {
+    const game = await loadGame(gameId);
+    const st = game ? computeServerGameState(game) : null;
+    eventType = serverEffectiveEventType(type, st && st.firstWinner);
+  }
   const pset = new Set((await pool.query('SELECT id FROM players')).rows.map(r => r.id));
   const seq = (await pool.query('SELECT COALESCE(MAX(seq),-1)+1 AS n FROM game_events WHERE game_id=$1', [gameId])).rows[0].n;
   await pool.query(
     'INSERT INTO game_events (game_id, seq, player_id, type, created_by_sub) VALUES ($1,$2,$3,$4,$5)',
-    [gameId, seq, pid(playerId, pset), type, req.session.user.sub]
+    [gameId, seq, pid(playerId, pset), eventType, req.session.user.sub]
   );
   broadcast({ type: 'gameUpdated', gameId });
   res.status(201).json({ ok: true, seq });
@@ -718,6 +743,255 @@ app.get('/api/admin/tasks', requireAdmin, async (req, res) => {
   res.json(r.rows);
 });
 
+// ==================== Planning Poker (публичный модуль, без OIDC) ====================
+// Пользователи заходят по ссылке, задают имя и голосуют. Реальное время — через /ws/poker.
+const pokerClients = new Map(); // roomId -> Set<ws>
+function pokerBroadcast(roomId) {
+  const set = pokerClients.get(roomId);
+  if (!set) return;
+  const msg = JSON.stringify({ type: 'sync' });
+  for (const ws of set) if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+}
+
+async function initPokerSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS poker_rooms (
+      id uuid PRIMARY KEY,
+      name text,
+      deck text NOT NULL DEFAULT 'fibonacci',
+      current_issue_id uuid,
+      revealed boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS poker_participants (
+      id uuid PRIMARY KEY,
+      room_id uuid NOT NULL REFERENCES poker_rooms(id) ON DELETE CASCADE,
+      name text NOT NULL,
+      is_spectator boolean NOT NULL DEFAULT false,
+      joined_at timestamptz NOT NULL DEFAULT now(),
+      last_seen timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS poker_issues (
+      id uuid PRIMARY KEY,
+      room_id uuid NOT NULL REFERENCES poker_rooms(id) ON DELETE CASCADE,
+      title text NOT NULL,
+      url text,
+      position int NOT NULL DEFAULT 0,
+      final_estimate text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS poker_votes (
+      issue_id uuid NOT NULL REFERENCES poker_issues(id) ON DELETE CASCADE,
+      participant_id uuid NOT NULL REFERENCES poker_participants(id) ON DELETE CASCADE,
+      value text NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (issue_id, participant_id)
+    );
+  `);
+  console.log('Planning Poker schema ready');
+}
+
+// Разбор списка задач: по строкам ИЛИ через запятую — не важно.
+function parsePokerIssues(input) {
+  if (Array.isArray(input)) input = input.join('\n');
+  return String(input || '')
+    .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 200);
+}
+
+async function insertPokerIssues(roomId, list) {
+  if (!list.length) return;
+  const startPos = (await pool.query(
+    'SELECT COALESCE(MAX(position),-1)+1 AS n FROM poker_issues WHERE room_id=$1', [roomId]
+  )).rows[0].n;
+  for (let i = 0; i < list.length; i++) {
+    const raw = list[i];
+    const isUrl = /^https?:\/\//i.test(raw);
+    await pool.query(
+      'INSERT INTO poker_issues (id, room_id, title, url, position) VALUES ($1,$2,$3,$4,$5)',
+      [crypto.randomUUID(), roomId, raw, isUrl ? raw : null, startPos + i]
+    );
+  }
+}
+
+async function loadPokerRoom(id, meId) {
+  const room = (await pool.query(
+    'SELECT id, name, deck, current_issue_id, revealed FROM poker_rooms WHERE id=$1', [id]
+  )).rows[0];
+  if (!room) return null;
+  const participants = (await pool.query(
+    'SELECT id, name, is_spectator AS "spectator" FROM poker_participants WHERE room_id=$1 ORDER BY joined_at', [id]
+  )).rows;
+  const issues = (await pool.query(
+    'SELECT id, title, url, position, final_estimate AS "finalEstimate" FROM poker_issues WHERE room_id=$1 ORDER BY position, created_at', [id]
+  )).rows;
+  const currentId = room.current_issue_id;
+  let rawVotes = [];
+  if (currentId) {
+    rawVotes = (await pool.query(
+      'SELECT participant_id AS "participantId", value FROM poker_votes WHERE issue_id=$1', [currentId]
+    )).rows;
+  }
+  let myValue = null;
+  const votes = rawVotes.map((v) => {
+    if (meId && v.participantId === meId) myValue = v.value;
+    return { participantId: v.participantId, value: room.revealed ? v.value : null, voted: true };
+  });
+  return {
+    id: room.id, name: room.name, deck: room.deck,
+    currentIssueId: currentId, revealed: room.revealed,
+    participants, issues, votes, myValue,
+  };
+}
+
+// Отдаём SPA-страницу покера и на /poker, и на /poker/:id
+app.get(['/poker', '/poker/:id'], (req, res) => res.sendFile(path.join(PUBLIC, 'poker.html')));
+
+app.post('/api/poker/rooms', async (req, res) => {
+  try {
+    const id = crypto.randomUUID();
+    const name = (req.body.name || '').trim() || null;
+    const deck = (req.body.deck || 'fibonacci').toString().trim() || 'fibonacci';
+    await pool.query('INSERT INTO poker_rooms (id, name, deck) VALUES ($1,$2,$3)', [id, name, deck]);
+    await insertPokerIssues(id, parsePokerIssues(req.body.issues));
+    res.status(201).json({ id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/poker/rooms/:id', async (req, res) => {
+  try {
+    const room = await loadPokerRoom(req.params.id, req.query.me);
+    room ? res.json(room) : res.status(404).json({ error: 'not found' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/poker/rooms/:id/join', async (req, res) => {
+  try {
+    const roomId = req.params.id;
+    const exists = (await pool.query('SELECT 1 FROM poker_rooms WHERE id=$1', [roomId])).rows[0];
+    if (!exists) return res.status(404).json({ error: 'not found' });
+    const name = (req.body.name || '').trim().slice(0, 60);
+    if (!name) return res.status(400).json({ error: 'name required' });
+    const spectator = !!req.body.spectator;
+    // Переподключение известного участника — обновляем имя/роль, id сохраняем.
+    if (req.body.participantId) {
+      const upd = await pool.query(
+        'UPDATE poker_participants SET name=$2, is_spectator=$3, last_seen=now() WHERE id=$1 AND room_id=$4 RETURNING id',
+        [req.body.participantId, name, spectator, roomId]
+      );
+      if (upd.rows[0]) { pokerBroadcast(roomId); return res.json({ participantId: req.body.participantId }); }
+    }
+    const id = crypto.randomUUID();
+    await pool.query(
+      'INSERT INTO poker_participants (id, room_id, name, is_spectator) VALUES ($1,$2,$3,$4)',
+      [id, roomId, name, spectator]
+    );
+    pokerBroadcast(roomId);
+    res.status(201).json({ participantId: id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/poker/rooms/:id/leave', async (req, res) => {
+  const { participantId } = req.body;
+  if (participantId) {
+    await pool.query('DELETE FROM poker_participants WHERE id=$1 AND room_id=$2', [participantId, req.params.id]);
+    pokerBroadcast(req.params.id);
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/poker/rooms/:id/issues', async (req, res) => {
+  try {
+    const roomId = req.params.id;
+    const list = parsePokerIssues(req.body.issues);
+    if (!list.length) return res.status(400).json({ error: 'no issues' });
+    await insertPokerIssues(roomId, list);
+    pokerBroadcast(roomId);
+    res.status(201).json(await loadPokerRoom(roomId));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/poker/issues/:id', async (req, res) => {
+  const row = (await pool.query('SELECT room_id FROM poker_issues WHERE id=$1', [req.params.id])).rows[0];
+  await pool.query('UPDATE poker_rooms SET current_issue_id=NULL, revealed=false WHERE current_issue_id=$1', [req.params.id]);
+  await pool.query('DELETE FROM poker_issues WHERE id=$1', [req.params.id]);
+  if (row) pokerBroadcast(row.room_id);
+  res.status(204).end();
+});
+
+app.post('/api/poker/rooms/:id/current', async (req, res) => {
+  const roomId = req.params.id;
+  await pool.query('UPDATE poker_rooms SET current_issue_id=$2, revealed=false WHERE id=$1',
+    [roomId, req.body.issueId || null]);
+  pokerBroadcast(roomId);
+  res.json({ ok: true });
+});
+
+app.post('/api/poker/issues/:id/vote', async (req, res) => {
+  try {
+    const issueId = req.params.id;
+    const { participantId, value } = req.body;
+    if (!participantId) return res.status(400).json({ error: 'participantId required' });
+    const issue = (await pool.query('SELECT room_id FROM poker_issues WHERE id=$1', [issueId])).rows[0];
+    if (!issue) return res.status(404).json({ error: 'not found' });
+    const room = (await pool.query('SELECT revealed FROM poker_rooms WHERE id=$1', [issue.room_id])).rows[0];
+    if (room && room.revealed) return res.status(409).json({ error: 'revealed' });
+    if (value === '' || value == null) {
+      await pool.query('DELETE FROM poker_votes WHERE issue_id=$1 AND participant_id=$2', [issueId, participantId]);
+    } else {
+      await pool.query(
+        `INSERT INTO poker_votes (issue_id, participant_id, value) VALUES ($1,$2,$3)
+         ON CONFLICT (issue_id, participant_id) DO UPDATE SET value=$3, updated_at=now()`,
+        [issueId, participantId, String(value)]
+      );
+    }
+    pokerBroadcast(issue.room_id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/poker/rooms/:id/reveal', async (req, res) => {
+  await pool.query('UPDATE poker_rooms SET revealed=true WHERE id=$1', [req.params.id]);
+  pokerBroadcast(req.params.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/poker/rooms/:id/reset', async (req, res) => {
+  const roomId = req.params.id;
+  const room = (await pool.query('SELECT current_issue_id FROM poker_rooms WHERE id=$1', [roomId])).rows[0];
+  if (room && room.current_issue_id) {
+    await pool.query('DELETE FROM poker_votes WHERE issue_id=$1', [room.current_issue_id]);
+  }
+  await pool.query('UPDATE poker_rooms SET revealed=false WHERE id=$1', [roomId]);
+  pokerBroadcast(roomId);
+  res.json({ ok: true });
+});
+
+app.post('/api/poker/issues/:id/estimate', async (req, res) => {
+  const issue = (await pool.query('SELECT room_id FROM poker_issues WHERE id=$1', [req.params.id])).rows[0];
+  if (!issue) return res.status(404).json({ error: 'not found' });
+  await pool.query('UPDATE poker_issues SET final_estimate=$2 WHERE id=$1',
+    [req.params.id, (req.body.value ?? '').toString() || null]);
+  pokerBroadcast(issue.room_id);
+  res.json({ ok: true });
+});
+
+app.get('/api/poker/rooms/:id/results', async (req, res) => {
+  const roomId = req.params.id;
+  const room = (await pool.query('SELECT id, name FROM poker_rooms WHERE id=$1', [roomId])).rows[0];
+  if (!room) return res.status(404).json({ error: 'not found' });
+  const participants = (await pool.query(
+    'SELECT id, name FROM poker_participants WHERE room_id=$1 ORDER BY joined_at', [roomId])).rows;
+  const issues = (await pool.query(
+    'SELECT id, title, url, final_estimate AS "finalEstimate" FROM poker_issues WHERE room_id=$1 ORDER BY position, created_at', [roomId])).rows;
+  const votes = (await pool.query(
+    `SELECT v.issue_id AS "issueId", v.participant_id AS "participantId", v.value
+     FROM poker_votes v JOIN poker_issues i ON i.id=v.issue_id WHERE i.room_id=$1`, [roomId])).rows;
+  res.json({ room, participants, issues, votes });
+});
+
 app.use(express.static(PUBLIC, { index: false }));
 
 // ---- HTTP + WS сервер ----
@@ -725,6 +999,20 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   if (!req.url.startsWith('/ws')) { socket.destroy(); return; }
+  // Публичный канал planning poker: /ws/poker?room=<uuid> — без авторизации
+  if (req.url.startsWith('/ws/poker')) {
+    const roomId = new URL(req.url, 'http://x').searchParams.get('room');
+    if (!roomId || !/^[0-9a-f-]{36}$/i.test(roomId)) { socket.destroy(); return; }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      let set = pokerClients.get(roomId);
+      if (!set) { set = new Set(); pokerClients.set(roomId, set); }
+      set.add(ws);
+      const drop = () => { set.delete(ws); if (!set.size) pokerClients.delete(roomId); };
+      ws.on('close', drop);
+      ws.on('error', drop);
+    });
+    return;
+  }
   sessionMiddleware(req, {}, () => {
     if (!req.session || !req.session.user) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, (ws) => {
@@ -736,6 +1024,7 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 initOidc().then(async () => {
+  await initPokerSchema();
   await runStartupDataRepairs();
   server.listen(PORT, () => console.log(`Ташкент v2 на :${PORT}`));
 }).catch(e => { console.error('OIDC init failed:', e); process.exit(1); });

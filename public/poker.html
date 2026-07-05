@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Planning Poker — Ташкент</title>
+  <meta name="description" content="Planning Poker: оценивайте задачи командой в реальном времени. Без регистрации — просто укажите имя и голосуйте." />
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    /* ---- Planning Poker page ---- */
+    .poker-main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 80px; }
+    .poker-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; align-items: start; }
+    @media (max-width: 900px) { .poker-layout { grid-template-columns: 1fr; } }
+
+    .poker-topbar {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      flex-wrap: wrap; margin-bottom: 18px;
+    }
+    .poker-topbar h1 { margin: 0; font-size: 1.35rem; letter-spacing: -0.01em; }
+    .poker-topbar .who { color: var(--muted); font-size: 0.92rem; }
+    .poker-topbar .who b { color: var(--text); font-weight: 650; }
+
+    .poker-table-card {
+      background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 24px; box-shadow: var(--shadow);
+    }
+    .poker-issue-current {
+      text-align: center; margin-bottom: 18px; color: var(--muted); font-size: 0.95rem;
+    }
+    .poker-issue-current .title { color: var(--text); font-weight: 650; font-size: 1.08rem; display: block; margin-top: 2px; overflow-wrap: anywhere; }
+    .poker-issue-current a { color: var(--accent); text-decoration: none; }
+    .poker-issue-current a:hover { text-decoration: underline; }
+
+    .poker-felt {
+      position: relative; border-radius: 999px; min-height: 150px;
+      background: radial-gradient(ellipse at 50% 40%, rgba(47,143,98,0.22), rgba(47,143,98,0.06) 65%, transparent);
+      border: 1px solid var(--accent-line);
+      display: flex; align-items: center; justify-content: center;
+      padding: 22px; margin: 0 auto 22px; max-width: 640px;
+    }
+    .poker-felt .felt-cta { text-align: center; }
+    .poker-felt .felt-cta .hint { color: var(--muted); font-size: 0.9rem; margin-top: 8px; }
+
+    .poker-seats { display: flex; flex-wrap: wrap; gap: 14px 18px; justify-content: center; margin-bottom: 6px; }
+    .seat { display: flex; flex-direction: column; align-items: center; gap: 7px; min-width: 74px; }
+    .seat .mini-card {
+      width: 46px; height: 66px; border-radius: 9px; display: grid; place-items: center;
+      font-weight: 700; font-size: 1.05rem; letter-spacing: -0.02em;
+      border: 1px solid var(--line); background: var(--surface-2); color: var(--faint);
+      transition: transform .25s ease, background .25s ease;
+    }
+    .seat .mini-card.voted {
+      background: repeating-linear-gradient(135deg, var(--accent-soft), var(--accent-soft) 6px, rgba(47,143,98,0.28) 6px, rgba(47,143,98,0.28) 12px);
+      border-color: var(--accent-line); color: transparent;
+    }
+    .seat .mini-card.open { background: var(--surface); border-color: var(--accent); color: var(--text); transform: translateY(-3px); }
+    .seat .mini-card.spectator { border-style: dashed; }
+    .seat .nm { font-size: 0.85rem; color: var(--soft); max-width: 110px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .seat.me .nm { color: var(--accent); font-weight: 650; }
+
+    .poker-stats { display: flex; gap: 22px; justify-content: center; margin: 14px 0 4px; flex-wrap: wrap; }
+    .poker-stats .stat { text-align: center; }
+    .poker-stats .v { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.02em; }
+    .poker-stats .l { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
+
+    .poker-deck { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 18px; }
+    .poker-card-btn {
+      width: 58px; height: 84px; border-radius: 11px; cursor: pointer;
+      display: grid; place-items: center; font-weight: 700; font-size: 1.15rem;
+      background: var(--surface-2); border: 1px solid var(--line); color: var(--text);
+      transition: transform .15s ease, border-color .15s ease, background .15s ease;
+      padding: 0; box-shadow: none;
+    }
+    .poker-card-btn:hover { transform: translateY(-4px); border-color: var(--accent-line); background: var(--surface); }
+    .poker-card-btn.selected {
+      transform: translateY(-7px); background: var(--accent); border-color: var(--accent);
+      color: #04130b; box-shadow: 0 12px 26px -12px rgba(47,143,98,0.8);
+    }
+    .poker-card-btn:disabled { opacity: 0.45; cursor: default; transform: none; }
+
+    .poker-side { display: flex; flex-direction: column; gap: 16px; }
+    .poker-panel {
+      background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px;
+    }
+    .poker-panel h2 { margin: 0 0 12px; font-size: 1.02rem; letter-spacing: -0.01em; }
+
+    .issue-list { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 340px; overflow-y: auto; }
+    .issue-item {
+      display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-sm);
+      border: 1px solid var(--line-soft); background: var(--bg-2); cursor: pointer; transition: border-color .15s ease;
+    }
+    .issue-item:hover { border-color: var(--accent-line); }
+    .issue-item.current { border-color: var(--accent); background: var(--accent-soft); }
+    .issue-item .t { flex: 1; min-width: 0; font-size: 0.88rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .issue-item .t a { color: var(--accent); text-decoration: none; }
+    .issue-item .t a:hover { text-decoration: underline; }
+    .issue-item .est {
+      flex-shrink: 0; min-width: 30px; height: 26px; padding: 0 7px; border-radius: 7px;
+      display: grid; place-items: center; font-size: 0.82rem; font-weight: 700;
+      background: var(--surface-2); border: 1px solid var(--line); color: var(--soft);
+    }
+    .issue-item .est.done { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
+    .issue-item .del {
+      flex-shrink: 0; width: 26px; height: 26px; border-radius: 7px; padding: 0; font-size: 0.9rem; line-height: 1;
+      background: transparent; border: none; color: var(--faint); cursor: pointer; box-shadow: none;
+    }
+    .issue-item .del:hover { color: var(--copper); background: var(--copper-soft); transform: none; }
+
+    textarea.poker-issues-input {
+      width: 100%; min-height: 84px; resize: vertical; border-radius: var(--radius-sm);
+      background: var(--bg-2); border: 1px solid var(--line); color: var(--text); padding: 10px 12px;
+    }
+    textarea.poker-issues-input:focus { outline: none; border-color: var(--accent-line); }
+
+    .poker-people { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+    .poker-people li { display: flex; align-items: center; gap: 9px; font-size: 0.92rem; }
+    .poker-people .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex-shrink: 0; }
+    .poker-people .dot.on { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .poker-people .tag { margin-left: auto; font-size: 0.76rem; color: var(--faint); }
+
+    /* Create / join forms */
+    .poker-entry { max-width: 520px; margin: 40px auto; }
+    .poker-entry .card-panel {
+      background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 30px; box-shadow: var(--shadow);
+    }
+    .poker-entry h1 { margin: 0 0 8px; font-size: 1.6rem; letter-spacing: -0.02em; }
+    .poker-entry .sub { color: var(--muted); margin: 0 0 22px; font-size: 0.97rem; }
+    .poker-entry label { display: block; font-size: 0.86rem; color: var(--soft); margin: 14px 0 6px; }
+    .poker-entry input[type="text"], .poker-entry select {
+      width: 100%; border-radius: var(--radius-sm); background: var(--bg-2);
+      border: 1px solid var(--line); color: var(--text); padding: 10px 12px;
+    }
+    .poker-entry input[type="text"]:focus, .poker-entry select:focus { outline: none; border-color: var(--accent-line); }
+    .poker-entry .check { display: flex; align-items: center; gap: 9px; margin-top: 14px; color: var(--soft); font-size: 0.92rem; cursor: pointer; }
+    .poker-entry .actions { margin-top: 22px; display: flex; gap: 10px; flex-wrap: wrap; }
+
+    /* Results table */
+    .poker-results-wrap { overflow-x: auto; }
+    table.poker-results { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+    .poker-results th, .poker-results td { border: 1px solid var(--line); padding: 7px 10px; text-align: center; white-space: nowrap; }
+    .poker-results th { background: var(--surface-2); color: var(--soft); font-weight: 650; }
+    .poker-results td.issue-cell { text-align: left; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+    .poker-results td.issue-cell a { color: var(--accent); text-decoration: none; }
+    .poker-results td .avg { color: var(--accent); font-weight: 700; }
+
+    .copy-flash { color: var(--accent); font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a href="/" class="logo" aria-label="Ташкент — главная"><span class="logo-mark">🃏</span><span>Ташкент · Poker</span></a>
+    <div class="user-bar">
+      <a href="/" class="logout-link">На главную</a>
+    </div>
+  </header>
+  <main id="poker-app" class="poker-main"></main>
+  <footer class="site-footer">
+    <a href="/poker">Planning Poker</a>
+    <a href="https://pay.cloudtips.ru/p/b433613e" class="donate-link" target="_blank" rel="noopener noreferrer">Поддержать</a>
+  </footer>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/poker.js"></script>
+</body>
+</html>
