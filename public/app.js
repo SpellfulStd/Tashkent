@@ -548,6 +548,7 @@ const SCORE_SHEET_EVENT_MARKS = {
   pocket_durak: 'Д',
   pocket_duplet: 'Дп',
   pocket_pants: 'Ш',
+  penalty: 'Шт',
   golden_regular: 'З',
   golden_duplet: 'ЗД',
   golden_pants: 'ЗШ',
