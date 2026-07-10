@@ -1774,6 +1774,8 @@ async function renderNewGame(match) {
 async function renderLiveGame(match, token) {
   const id = match[1];
   let game = null;
+  let pendingEventType = null;
+  let queuedAfterTurnEventType = null;
   state.currentGameId = id;
 
   async function loadAndRender() {
@@ -1795,11 +1797,13 @@ async function renderLiveGame(match, token) {
     if (state.actionPending || !game || game.status === 'finished') return;
     const mutationId = makeMutationId();
     const previousGame = game;
+    let saved = false;
     const optimisticEvent = {
       ...normalizeGameEvent(null, { type, playerId }),
       localMutationId: mutationId,
     };
     state.actionPending = true;
+    pendingEventType = type;
     state.pendingLiveMutations.add(mutationId);
     game = { ...game, events: [...(game.events || []), optimisticEvent] };
     render();
@@ -1817,6 +1821,7 @@ async function renderLiveGame(match, token) {
         game = { ...game, events };
         if (confirmedEvent.type !== optimisticEvent.type || confirmedEvent.playerId !== optimisticEvent.playerId) render();
       }
+      saved = true;
       perfLog(`live action ${type}`, startedAt);
     } catch (err) {
       if (token === state.routeToken) {
@@ -1826,11 +1831,21 @@ async function renderLiveGame(match, token) {
       handleActionError(err);
     } finally {
       state.actionPending = false;
+      pendingEventType = null;
       cleanupLiveMutation(mutationId);
+      const queuedType = queuedAfterTurnEventType;
+      queuedAfterTurnEventType = null;
+      if (saved && queuedType && token === state.routeToken && game && game.status !== 'finished') {
+        await pushEvent(queuedType);
+      }
     }
   }
 
   async function pushEvent(type) {
+    if (state.actionPending) {
+      if (pendingEventType === 'set_turn' && !queuedAfterTurnEventType) queuedAfterTurnEventType = type;
+      return;
+    }
     const st = computeState(game);
     const currentPlayer = game.players[st.turnIdx];
     if (!currentPlayer) return;
