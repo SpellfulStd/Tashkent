@@ -1023,6 +1023,8 @@ label {
 
 .sheet-mark {
   position: relative;
+  box-sizing: border-box;
+  flex: 0 0 auto;
   width: 26px;
   height: 26px;
   display: inline-flex;
@@ -1056,20 +1058,13 @@ label {
   background: var(--copper-soft);
 }
 
-.sheet-mark.penalty {
-  color: var(--copper);
-  border-color: var(--copper-line);
-  border-radius: 50%;
-  background: var(--copper-soft);
-}
-
 .sheet-letter {
   position: absolute;
   right: 3px;
   bottom: 2px;
   max-width: 16px;
   overflow: hidden;
-  font-size: 7px;
+  font-size: 8px;
   font-weight: 700;
   line-height: 1;
   text-align: right;

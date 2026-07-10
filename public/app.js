@@ -545,10 +545,9 @@ function setGameDetailView(view) {
 }
 
 const SCORE_SHEET_EVENT_MARKS = {
-  pocket_durak: "'",
+  pocket_durak: 'Д',
   pocket_duplet: 'Дп',
   pocket_pants: 'Ш',
-  penalty: 'Шт',
   golden_regular: 'З',
   golden_duplet: 'ЗД',
   golden_pants: 'ЗШ',
@@ -590,13 +589,15 @@ function eventPointDeltas(game, ev, firstWinner = null) {
   return deltas;
 }
 
-function appendScoreMark(marks, mark) {
+function appendScoreMark(marks, mark, { settleOpposite = true } = {}) {
   // Offsets go top-down: circle the earlier opposite mark and omit the closing mark.
-  for (let i = 0; i < marks.length; i++) {
-    if (!marks[i].settled && marks[i].sign !== mark.sign) {
-      marks[i].settled = true;
-      if (mark.letter) marks[i].settledByLetter = mark.letter;
-      return;
+  if (settleOpposite) {
+    for (let i = 0; i < marks.length; i++) {
+      if (!marks[i].settled && marks[i].sign !== mark.sign) {
+        marks[i].settled = true;
+        if (mark.letter) marks[i].settledByLetter = mark.letter;
+        return;
+      }
     }
   }
   marks.push(mark);
@@ -647,7 +648,7 @@ function buildScoreSheetColumns(game) {
       const delta = deltas.get(p.id) || 0;
       const sign = delta > 0 ? 1 : -1;
       for (let i = 0; i < Math.abs(delta); i++) {
-        appendScoreMark(columns[p.id], { sign, letter, isPenalty: ev.type === 'penalty' });
+        appendScoreMark(columns[p.id], { sign, letter }, { settleOpposite: ev.type !== 'penalty' });
       }
     });
 
@@ -669,7 +670,6 @@ function scoreMarkHTML(mark) {
     'sheet-mark',
     mark.sign > 0 ? 'plus' : 'minus',
     mark.settled ? 'settled' : '',
-    mark.isPenalty ? 'penalty' : '',
   ].filter(Boolean).join(' ');
   return `
     <span class="${classes}">
