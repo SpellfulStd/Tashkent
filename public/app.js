@@ -14,11 +14,51 @@ const state = {
   reloadLiveGame: null,
   routeToken: 0,
   actionPending: false,
+  pendingLiveMutations: new Set(),
   adminChatTimer: null,
 };
 
+function perfDebugEnabled() {
+  try {
+    return localStorage.getItem('tashkent.debugPerf') === '1' || new URLSearchParams(location.search).has('debugPerf');
+  } catch {
+    return false;
+  }
+}
+
+function perfNow() {
+  return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+}
+
+function perfLog(label, startedAt, data = null) {
+  if (!perfDebugEnabled()) return;
+  const elapsed = Math.round(perfNow() - startedAt);
+  if (data) console.debug(`[tashkent perf] ${label}: ${elapsed}ms`, data);
+  else console.debug(`[tashkent perf] ${label}: ${elapsed}ms`);
+}
+
+function makeMutationId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function cleanupLiveMutation(mutationId) {
+  setTimeout(() => state.pendingLiveMutations.delete(mutationId), 10000);
+}
+
+function normalizeGameEvent(event, fallback) {
+  return {
+    type: (event && event.type) || fallback.type,
+    playerId: (event && event.playerId) || fallback.playerId,
+    ts: (event && event.ts) || fallback.ts || new Date().toISOString(),
+  };
+}
+
 const api = {
   async request(url, options = {}) {
+    const startedAt = perfNow();
     const init = {
       method: options.method || 'GET',
       credentials: 'same-origin',
@@ -29,7 +69,13 @@ const api = {
       init.body = JSON.stringify(options.body);
     }
 
-    const r = await fetch(url, init);
+    let r;
+    try {
+      r = await fetch(url, init);
+    } catch (err) {
+      perfLog(`${init.method} ${url}`, startedAt, { error: err.message });
+      throw err;
+    }
     if (r.status === 401) {
       location.href = '/login';
       throw new Error('Сессия истекла');
@@ -46,8 +92,10 @@ const api = {
       const err = new Error((data && data.error) || `Ошибка ${r.status}`);
       err.status = r.status;
       err.data = data;
+      perfLog(`${init.method} ${url}`, startedAt, { status: r.status });
       throw err;
     }
+    perfLog(`${init.method} ${url}`, startedAt, { status: r.status });
     return data;
   },
   get(url) { return this.request(url); },
@@ -873,6 +921,11 @@ function connectWS() {
     let msg = null;
     try { msg = JSON.parse(event.data); }
     catch { return; }
+
+    if (msg.type === 'gameUpdated' && msg.mutationId && state.pendingLiveMutations.has(msg.mutationId)) {
+      state.pendingLiveMutations.delete(msg.mutationId);
+      return;
+    }
 
     if (msg.type === 'gameUpdated' && msg.gameId === state.currentGameId && typeof state.reloadLiveGame === 'function') {
       await state.reloadLiveGame();
@@ -1740,15 +1793,40 @@ async function renderLiveGame(match, token) {
 
   async function postGameEvent(type, playerId) {
     if (state.actionPending || !game || game.status === 'finished') return;
+    const mutationId = makeMutationId();
+    const previousGame = game;
+    const optimisticEvent = {
+      ...normalizeGameEvent(null, { type, playerId }),
+      localMutationId: mutationId,
+    };
     state.actionPending = true;
+    state.pendingLiveMutations.add(mutationId);
+    game = { ...game, events: [...(game.events || []), optimisticEvent] };
+    render();
+    const startedAt = perfNow();
     try {
-      await api.post(`/api/games/${id}/events`, { type, playerId });
-      await loadAndRender();
-      await refreshActive();
+      const result = await api.post(`/api/games/${id}/events`, { type, playerId, mutationId });
+      const confirmedEvent = normalizeGameEvent(result && result.event, optimisticEvent);
+      if (token === state.routeToken) {
+        const events = [...(game.events || [])];
+        const idx = events.findIndex((ev) => ev.localMutationId === mutationId);
+        if (idx >= 0) events[idx] = confirmedEvent;
+        else if (!events.some((ev) => ev.type === confirmedEvent.type && ev.playerId === confirmedEvent.playerId && ev.ts === confirmedEvent.ts)) {
+          events.push(confirmedEvent);
+        }
+        game = { ...game, events };
+        if (confirmedEvent.type !== optimisticEvent.type || confirmedEvent.playerId !== optimisticEvent.playerId) render();
+      }
+      perfLog(`live action ${type}`, startedAt);
     } catch (err) {
+      if (token === state.routeToken) {
+        game = previousGame;
+        render();
+      }
       handleActionError(err);
     } finally {
       state.actionPending = false;
+      cleanupLiveMutation(mutationId);
     }
   }
 
@@ -1767,27 +1845,54 @@ async function renderLiveGame(match, token) {
   }
 
   async function undoLast() {
-    if (!game.events || game.events.length === 0) return;
+    if (state.actionPending || !game.events || game.events.length === 0) return;
+    const mutationId = makeMutationId();
+    const previousGame = game;
     const events = game.events.slice(0, -1);
+    state.actionPending = true;
+    state.pendingLiveMutations.add(mutationId);
+    game = {
+      ...game,
+      status: 'active',
+      finishedAt: null,
+      winnerId: null,
+      pointsLeaderId: null,
+      events,
+    };
+    render();
     try {
-      await api.put(`/api/games/${id}`, {
+      const updated = await api.put(`/api/games/${id}`, {
+        mutationId,
         status: 'active',
         finishedAt: null,
         winnerId: null,
         pointsLeaderId: null,
         events,
       });
-      await loadAndRender();
+      if (token === state.routeToken && updated) {
+        game = updated;
+        render();
+      }
     } catch (err) {
+      if (token === state.routeToken) {
+        game = previousGame;
+        render();
+      }
       handleActionError(err);
+    } finally {
+      state.actionPending = false;
+      cleanupLiveMutation(mutationId);
     }
   }
 
   async function finishGame() {
     const st = computeState(game);
     const winner = st.firstWinner || st.winner;
+    const mutationId = makeMutationId();
+    state.pendingLiveMutations.add(mutationId);
     try {
       await api.put(`/api/games/${id}`, {
+        mutationId,
         status: 'finished',
         finishedAt: new Date().toISOString(),
         winnerId: winner ? winner.id : null,
@@ -1798,6 +1903,8 @@ async function renderLiveGame(match, token) {
       location.hash = `#/games/${id}`;
     } catch (err) {
       handleActionError(err);
+    } finally {
+      cleanupLiveMutation(mutationId);
     }
   }
 
@@ -1805,8 +1912,11 @@ async function renderLiveGame(match, token) {
     if (!confirm('Завершить игру досрочно? Победителем будет лидер по шарам.')) return;
     const st = computeState(game);
     const leader = [...game.players].sort((a, b) => st.scores[b.id].balls - st.scores[a.id].balls)[0];
+    const mutationId = makeMutationId();
+    state.pendingLiveMutations.add(mutationId);
     try {
       await api.put(`/api/games/${id}`, {
+        mutationId,
         status: 'finished',
         finishedAt: new Date().toISOString(),
         winnerId: leader ? leader.id : null,
@@ -1817,6 +1927,8 @@ async function renderLiveGame(match, token) {
       location.hash = `#/games/${id}`;
     } catch (err) {
       handleActionError(err);
+    } finally {
+      cleanupLiveMutation(mutationId);
     }
   }
 
@@ -1825,6 +1937,7 @@ async function renderLiveGame(match, token) {
   }
 
   function render() {
+    const renderStartedAt = perfNow();
     const st = computeState(game);
     const n = game.players.length;
     const access = accessForGame(game);
@@ -1931,6 +2044,7 @@ async function renderLiveGame(match, token) {
     const dlgSeriesBtn = document.getElementById('dlgSeriesBtn'); if (dlgSeriesBtn) dlgSeriesBtn.addEventListener('click', () => { location.hash = `#/series/${game.seriesId}`; });
     const dlgHomeBtn = document.getElementById('dlgHomeBtn'); if (dlgHomeBtn) dlgHomeBtn.addEventListener('click', () => { location.hash = '#/'; });
     const dlg = document.getElementById('winDlg'); if (dlg && typeof dlg.showModal === 'function') dlg.showModal();
+    perfLog(`live render ${(game.events || []).length} events`, renderStartedAt);
   }
 }
 

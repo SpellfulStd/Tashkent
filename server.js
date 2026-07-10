@@ -605,6 +605,7 @@ app.post('/api/games', requireAuth, async (req, res) => {
 });
 app.put('/api/games/:id', requireAuth, async (req, res) => {
   const b = req.body, id = req.params.id;
+  const mutationId = typeof b.mutationId === 'string' ? b.mutationId : null;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -621,7 +622,7 @@ app.put('/api/games/:id', requireAuth, async (req, res) => {
     if (Array.isArray(b.players)) { await client.query('DELETE FROM game_players WHERE game_id=$1', [id]); await writeRoster(client, id, b.players, pset); }
     if (Array.isArray(b.events))  { await client.query('DELETE FROM game_events WHERE game_id=$1', [id]); await writeEvents(client, id, b.events, pset); }
     await client.query('COMMIT');
-    broadcast({ type: 'gameUpdated', gameId: id });
+    broadcast({ type: 'gameUpdated', gameId: id, ...(mutationId ? { mutationId } : {}) });
     broadcast({ type: 'activeChanged' });
     res.json(await loadGame(id));
   } catch (e) { await client.query('ROLLBACK'); res.status(500).json({ error: e.message }); }
@@ -637,6 +638,7 @@ app.delete('/api/games/:id', requireAuth, async (req, res) => {
 app.post('/api/games/:id/events', requireAuth, async (req, res) => {
   const gameId = req.params.id;
   const { type, playerId } = req.body;
+  const mutationId = typeof req.body.mutationId === 'string' ? req.body.mutationId : null;
   if (!type) return res.status(400).json({ error: 'type required' });
   const me = await myPlayer(req.session.user.sub);
   if (!me) return res.status(403).json({ error: 'not a linked player' });
@@ -653,12 +655,14 @@ app.post('/api/games/:id/events', requireAuth, async (req, res) => {
   }
   const pset = new Set((await pool.query('SELECT id FROM players')).rows.map(r => r.id));
   const seq = (await pool.query('SELECT COALESCE(MAX(seq),-1)+1 AS n FROM game_events WHERE game_id=$1', [gameId])).rows[0].n;
-  await pool.query(
-    'INSERT INTO game_events (game_id, seq, player_id, type, created_by_sub) VALUES ($1,$2,$3,$4,$5)',
+  const inserted = await pool.query(
+    `INSERT INTO game_events (game_id, seq, player_id, type, created_by_sub)
+     VALUES ($1,$2,$3,$4,$5)
+     RETURNING seq, player_id AS "playerId", type, created_at AS ts`,
     [gameId, seq, pid(playerId, pset), eventType, req.session.user.sub]
   );
-  broadcast({ type: 'gameUpdated', gameId });
-  res.status(201).json({ ok: true, seq });
+  broadcast({ type: 'gameUpdated', gameId, ...(mutationId ? { mutationId } : {}) });
+  res.status(201).json({ ok: true, seq, event: inserted.rows[0] });
 });
 
 async function writeRoster(client, gameId, players, pset) {
