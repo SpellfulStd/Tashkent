@@ -50,6 +50,7 @@ function cleanupLiveMutation(mutationId) {
 
 function normalizeGameEvent(event, fallback) {
   return {
+    seq: (event && event.seq) ?? fallback.seq,
     type: (event && event.type) || fallback.type,
     playerId: (event && event.playerId) || fallback.playerId,
     ts: (event && event.ts) || fallback.ts || new Date().toISOString(),
@@ -129,6 +130,19 @@ const GOLDEN_AS_REGULAR_EVENT = {
   golden_duplet: 'pocket_duplet',
   golden_pants: 'pocket_pants',
 };
+
+const SCORE_EDIT_EVENT_TYPES = [
+  'pocket_regular',
+  'pocket_durak',
+  'pocket_duplet',
+  'pocket_pants',
+  'penalty',
+  'miss',
+  'set_turn',
+  'golden_regular',
+  'golden_duplet',
+  'golden_pants',
+];
 
 function effectiveEventType(type, firstWinner) {
   return firstWinner && GOLDEN_AS_REGULAR_EVENT[type] ? GOLDEN_AS_REGULAR_EVENT[type] : type;
@@ -324,7 +338,10 @@ function showToast(message) {
 
 function handleActionError(err) {
   if (err.status === 403) {
-    showToast('Вы не в составе этой игры');
+    const code = err.data && err.data.error;
+    showToast(code === 'forbidden' || code === 'score edit forbidden'
+      ? 'Нет прав на редактирование счёта'
+      : 'Вы не в составе этой игры');
     return;
   }
   if (err.status === 409) {
@@ -476,12 +493,167 @@ function eventDelta(def, playerCount) {
   return parts.join(', ');
 }
 
+function eventEditLabel(type) {
+  if (type === 'miss') return 'Промах';
+  const def = EVENT_DEFS[type];
+  return def ? def.label : type;
+}
+
+function eventIdentity(ev, fallbackIndex) {
+  const seq = Number(ev && ev.seq);
+  return Number.isInteger(seq) && seq >= 0 ? String(seq) : String(fallbackIndex);
+}
+
+function findEventIndex(game, key) {
+  const events = game.events || [];
+  return events.findIndex((ev, i) => eventIdentity(ev, i) === String(key));
+}
+
+function copyScoreEvents(game) {
+  return (game.events || []).map((ev) => ({
+    type: ev.type,
+    playerId: ev.playerId,
+    ts: ev.ts || new Date().toISOString(),
+  }));
+}
+
+function scoreEditEventOptionsHTML(selectedType) {
+  return SCORE_EDIT_EVENT_TYPES.map((type) => `
+    <option value="${esc(type)}" ${type === selectedType ? 'selected' : ''}>${esc(eventEditLabel(type))}</option>
+  `).join('');
+}
+
+function scoreEditPlayerOptionsHTML(game, selectedPlayerId) {
+  return game.players.map((p) => `
+    <option value="${esc(p.id)}" ${p.id === selectedPlayerId ? 'selected' : ''}>${esc(p.name)}</option>
+  `).join('');
+}
+
+function scoreEditToolbarHTML(eventsCount) {
+  if (!eventsCount) {
+    return `
+      <div class="event-edit-toolbar">
+        <button class="ghost small" data-insert-event="end">+ Добавить запись</button>
+      </div>
+    `;
+  }
+  return `
+    <div class="event-edit-toolbar">
+      <button class="ghost small" data-insert-event="start">+ В начало</button>
+      <button class="ghost small" data-insert-event="end">+ В конец</button>
+    </div>
+  `;
+}
+
+function openScoreEventDialog(game, event, onSave, title) {
+  const dialog = document.createElement('dialog');
+  dialog.className = 'event-editor-dialog';
+  dialog.innerHTML = `
+    <form method="dialog" class="card">
+      <h2>${esc(title)}</h2>
+      <label for="scoreEditPlayer">Игрок</label>
+      <select id="scoreEditPlayer">${scoreEditPlayerOptionsHTML(game, event.playerId)}</select>
+      <label for="scoreEditType">Запись</label>
+      <select id="scoreEditType">${scoreEditEventOptionsHTML(event.type)}</select>
+      <div class="button-row">
+        <button type="submit">Сохранить</button>
+        <button class="ghost" type="button" data-cancel>Отмена</button>
+      </div>
+    </form>
+  `;
+  document.body.appendChild(dialog);
+  const form = dialog.querySelector('form');
+  const cancelBtn = dialog.querySelector('[data-cancel]');
+  const saveBtn = form.querySelector('button[type="submit"]');
+  const close = () => {
+    if (dialog.open) dialog.close();
+    else dialog.remove();
+  };
+
+  dialog.addEventListener('close', () => dialog.remove(), { once: true });
+  cancelBtn.addEventListener('click', close);
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    saveBtn.disabled = true;
+    try {
+      await onSave({
+        type: dialog.querySelector('#scoreEditType').value,
+        playerId: dialog.querySelector('#scoreEditPlayer').value,
+        ts: event.ts || new Date().toISOString(),
+      });
+      close();
+    } catch (err) {
+      saveBtn.disabled = false;
+      showToast(err.message || 'Не удалось сохранить запись');
+    }
+  });
+
+  if (typeof dialog.showModal === 'function') dialog.showModal();
+  else dialog.setAttribute('open', '');
+}
+
+async function saveScoreEvents(game, events, mutationId = makeMutationId()) {
+  state.pendingLiveMutations.add(mutationId);
+  try {
+    return await api.put(`/api/games/${game.id}/score`, { mutationId, events });
+  } finally {
+    cleanupLiveMutation(mutationId);
+  }
+}
+
+function setupScoreEditControls({ getGame, replaceEvents }) {
+  document.querySelectorAll('[data-edit-event]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const game = getGame();
+      if (!game || !game.canEditScore) return;
+      const idx = findEventIndex(game, button.dataset.editEvent);
+      if (idx < 0) return;
+      const events = copyScoreEvents(game);
+      openScoreEventDialog(game, events[idx], async (nextEvent) => {
+        events[idx] = nextEvent;
+        await replaceEvents(events);
+      }, 'Изменить запись');
+    });
+  });
+
+  document.querySelectorAll('[data-delete-event]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const game = getGame();
+      if (!game || !game.canEditScore) return;
+      const idx = findEventIndex(game, button.dataset.deleteEvent);
+      if (idx < 0) return;
+      if (!confirm('Удалить эту запись из лога?')) return;
+      const events = copyScoreEvents(game);
+      events.splice(idx, 1);
+      await replaceEvents(events);
+    });
+  });
+
+  document.querySelectorAll('[data-insert-event]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const game = getGame();
+      if (!game || !game.canEditScore) return;
+      const events = copyScoreEvents(game);
+      const mode = button.dataset.insertEvent;
+      const idx = mode === 'start' ? -1 : mode === 'end' ? events.length - 1 : findEventIndex(game, mode);
+      const st = computeState(game);
+      const currentPlayer = game.players[st.turnIdx] || game.players[0];
+      const draft = { type: 'pocket_regular', playerId: currentPlayer ? currentPlayer.id : '', ts: new Date().toISOString() };
+      openScoreEventDialog(game, draft, async (nextEvent) => {
+        events.splice(idx + 1, 0, nextEvent);
+        await replaceEvents(events);
+      }, 'Добавить запись');
+    });
+  });
+}
+
 function visibleEvents(game) {
   return (game.events || []).filter((ev) => ev.type !== 'miss');
 }
 
-function eventLogHTML(game, events = visibleEvents(game)) {
+function eventLogHTML(game, events = visibleEvents(game), options = {}) {
   if (events.length === 0) return '<p class="empty-state">Пусто.</p>';
+  const editable = !!options.editable;
   const scores = {};
   game.players.forEach((p) => { scores[p.id] = { balls: 0 }; });
   let firstWinner = null;
@@ -489,12 +661,21 @@ function eventLogHTML(game, events = visibleEvents(game)) {
   const rows = events.map((ev) => {
     const p = game.players.find((x) => x.id === ev.playerId);
     const idx = game.players.findIndex((x) => x.id === ev.playerId);
-    const def = effectiveEventDef(ev.type, firstWinner);
+    const displayType = effectiveEventType(ev.type, firstWinner);
+    const def = EVENT_DEFS[displayType];
+    const eventKey = eventIdentity(ev, (game.events || []).indexOf(ev));
     const row = `
-      <div class="item">
+      <div class="item ${editable ? 'editable' : ''}">
         <span class="who">${esc(p ? p.name : '?')}</span>
-        <span class="what">${esc(def ? def.label : ev.type)}</span>
+        <span class="what">${esc(editable ? eventEditLabel(displayType) : def ? def.label : ev.type)}</span>
         <span class="delta">${esc(eventDelta(def, game.players.length))}</span>
+        ${editable ? `
+          <span class="event-tools">
+            <button class="ghost small" type="button" data-edit-event="${esc(eventKey)}" title="Изменить запись">Изм.</button>
+            <button class="ghost small" type="button" data-insert-event="${esc(eventKey)}" title="Вставить после этой записи">+ после</button>
+            <button class="ghost danger small" type="button" data-delete-event="${esc(eventKey)}" title="Удалить запись">Удалить</button>
+          </span>
+        ` : ''}
       </div>
     `;
     if (def && idx >= 0 && scores[ev.playerId]) {
@@ -1948,8 +2129,34 @@ async function renderLiveGame(match, token) {
     }
   }
 
+  async function replaceScoreEvents(events) {
+    if (state.actionPending || !game || !game.canEditScore) return;
+    const mutationId = makeMutationId();
+    const previousGame = game;
+    state.actionPending = true;
+    game = { ...game, events: events.map((ev, i) => ({ ...ev, seq: i })) };
+    render();
+    try {
+      const updated = await saveScoreEvents(previousGame, events, mutationId);
+      if (token === state.routeToken && updated) {
+        game = updated;
+        await refreshActive();
+        render();
+      }
+    } catch (err) {
+      if (token === state.routeToken) {
+        game = previousGame;
+        render();
+      }
+      handleActionError(err);
+    } finally {
+      state.actionPending = false;
+    }
+  }
+
   function renderEventLog() {
-    return eventLogHTML(game);
+    const events = game.canEditScore ? (game.events || []) : visibleEvents(game);
+    return eventLogHTML(game, events, { editable: game.canEditScore });
   }
 
   function render() {
@@ -1961,6 +2168,7 @@ async function renderLiveGame(match, token) {
     const isFinished = game.status === 'finished';
     const firstWinner = st.firstWinner || (game.winnerId ? game.players.find((p) => p.id === game.winnerId) : null);
     const shownEvents = visibleEvents(game);
+    const logEvents = game.canEditScore ? (game.events || []) : shownEvents;
     const liveView = getLiveGameView();
     const scoreViewHTML = liveView === 'sheet'
       ? scoreSheetHTML(game, st, { canControl, isFinished })
@@ -2027,7 +2235,8 @@ async function renderLiveGame(match, token) {
           </div>
         ` : ''}
 
-        <h2>Лог ходов (${shownEvents.length})</h2>
+        <h2>Лог ходов (${logEvents.length})</h2>
+        ${game.canEditScore ? scoreEditToolbarHTML(logEvents.length) : ''}
         <div class="card event-log">${renderEventLog()}</div>
 
         ${isFinished ? `
@@ -2054,6 +2263,7 @@ async function renderLiveGame(match, token) {
       setLiveGameView(b.dataset.liveView);
       render();
     }));
+    setupScoreEditControls({ getGame: () => game, replaceEvents: replaceScoreEvents });
     const undoBtn = document.getElementById('undoBtn'); if (undoBtn) undoBtn.addEventListener('click', undoLast);
     const endBtn = document.getElementById('endBtn'); if (endBtn) endBtn.addEventListener('click', endGame);
     const finishBtn = document.getElementById('finishBtn'); if (finishBtn) finishBtn.addEventListener('click', finishGame);
@@ -2090,13 +2300,14 @@ async function renderChangelog() {
 
 async function renderGameDetail(match) {
   const id = match[1];
-  const game = await api.get(`/api/games/${id}`);
+  let game = await api.get(`/api/games/${id}`);
   if (!game || game.error) { app.innerHTML = '<p>Игра не найдена.</p>'; return; }
   const st = computeState(game);
   const winner = game.players.find((p) => p.id === game.winnerId);
   const pointsLeader = game.players.find((p) => p.id === game.pointsLeaderId);
   const duration = game.finishedAt ? fmtDuration(game.createdAt, game.finishedAt) : null;
   const shownEvents = visibleEvents(game);
+  const logEvents = game.canEditScore ? (game.events || []) : shownEvents;
   const detailScores = {};
   game.players.forEach((p) => {
     detailScores[p.id] = (game.finalScores && game.finalScores[p.id]) || st.scores[p.id];
@@ -2118,9 +2329,10 @@ async function renderGameDetail(match) {
 
     ${game.status === 'finished' ? donateCTAHTML() : ''}
 
-    <h2>Лог ходов (${shownEvents.length})</h2>
+    <h2>Лог ходов (${logEvents.length})</h2>
+    ${game.canEditScore ? scoreEditToolbarHTML(logEvents.length) : ''}
     <div class="card event-log">
-      ${eventLogHTML(game, shownEvents)}
+      ${eventLogHTML(game, logEvents, { editable: game.canEditScore })}
     </div>
 
     <div class="danger-zone">
@@ -2131,6 +2343,18 @@ async function renderGameDetail(match) {
     setGameDetailView(b.dataset.detailView);
     renderGameDetail(match);
   }));
+  setupScoreEditControls({
+    getGame: () => game,
+    replaceEvents: async (events) => {
+      try {
+        game = await saveScoreEvents(game, events);
+        await refreshActive();
+        renderGameDetail(match);
+      } catch (err) {
+        handleActionError(err);
+      }
+    },
+  });
   document.getElementById('delBtn').addEventListener('click', async () => {
     if (!confirm('Удалить игру навсегда?')) return;
     await api.del(`/api/games/${id}`);

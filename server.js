@@ -217,18 +217,38 @@ app.get('/', (req, res) => {
 
 // ---- helpers ----
 async function loadGame(id) {
-  const g = (await pool.query('SELECT * FROM games WHERE id=$1', [id])).rows[0];
+  return loadGameFromDb(pool, id);
+}
+
+async function loadGameForUser(id, user) {
+  return loadGameFromDb(pool, id, user);
+}
+
+function canEditScoreForGameRow(user, g) {
+  if (!user || !g) return false;
+  return isAdmin(user) || g.created_by_sub === user.sub || g.series_created_by_sub === user.sub;
+}
+
+async function loadGameFromDb(db, id, user = null) {
+  const g = (await db.query(
+    `SELECT g.*, s.created_by_sub AS series_created_by_sub
+     FROM games g
+     LEFT JOIN series s ON s.id=g.series_id
+     WHERE g.id=$1`,
+    [id]
+  )).rows[0];
   if (!g) return null;
-  const players = (await pool.query(
+  const players = (await db.query(
     'SELECT player_id AS id, name FROM game_players WHERE game_id=$1 ORDER BY position', [id]
   )).rows;
-  const events = (await pool.query(
-    'SELECT player_id AS "playerId", type, created_at AS ts FROM game_events WHERE game_id=$1 ORDER BY seq', [id]
+  const events = (await db.query(
+    'SELECT seq, player_id AS "playerId", type, created_at AS ts FROM game_events WHERE game_id=$1 ORDER BY seq', [id]
   )).rows;
   return {
     id: g.id, seriesId: g.series_id, createdAt: g.created_at, finishedAt: g.finished_at,
     targetBalls: g.target_balls, players, events, finalScores: g.final_scores,
     winnerId: g.winner_player_id, pointsLeaderId: g.points_leader_player_id, status: g.status,
+    canEditScore: canEditScoreForGameRow(user, g),
   };
 }
 const pid = (v, set) => (v && set.has(v) ? v : null);
@@ -236,6 +256,105 @@ const myPlayer = async (sub) =>
   (await pool.query('SELECT id FROM players WHERE account_sub=$1', [sub])).rows[0] || null;
 const isAdmin = (user) => !!user && user.username === 'spellful';
 const repairPrevIndex = (idx, n) => (idx - 1 + n) % n;
+
+function httpError(statusCode, message) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
+}
+
+async function myPlayerFromDb(db, sub) {
+  return (await db.query('SELECT id FROM players WHERE account_sub=$1', [sub])).rows[0] || null;
+}
+
+async function userInGameRoster(db, user, gameId) {
+  const me = user && user.sub ? await myPlayerFromDb(db, user.sub) : null;
+  if (!me) return false;
+  return !!(await db.query('SELECT 1 FROM game_players WHERE game_id=$1 AND player_id=$2', [gameId, me.id])).rows[0];
+}
+
+async function canEditGameScore(db, user, gameId) {
+  if (isAdmin(user)) return true;
+  const g = (await db.query(
+    `SELECT g.created_by_sub, s.created_by_sub AS series_created_by_sub
+     FROM games g
+     LEFT JOIN series s ON s.id=g.series_id
+     WHERE g.id=$1`,
+    [gameId]
+  )).rows[0];
+  return canEditScoreForGameRow(user, g);
+}
+
+async function gameEventsFromDb(db, gameId) {
+  return (await db.query(
+    'SELECT seq, player_id AS "playerId", type, created_at AS ts FROM game_events WHERE game_id=$1 ORDER BY seq',
+    [gameId]
+  )).rows;
+}
+
+async function gamePlayerIdSet(db, gameId) {
+  return new Set((await db.query('SELECT player_id AS id FROM game_players WHERE game_id=$1', [gameId])).rows.map(r => r.id));
+}
+
+function sameGameEvent(a, b) {
+  if (!a || !b || a.type !== b.type || a.playerId !== b.playerId) return false;
+  const ats = new Date(a.ts).getTime();
+  const bts = new Date(b.ts).getTime();
+  return Number.isFinite(ats) && Number.isFinite(bts) && ats === bts;
+}
+
+function isLastEventRemoval(currentEvents, nextEvents) {
+  if (!Array.isArray(nextEvents) || nextEvents.length !== currentEvents.length - 1) return false;
+  return nextEvents.every((ev, i) => sameGameEvent(currentEvents[i], ev));
+}
+
+function cleanGameEvents(events, pset) {
+  if (!Array.isArray(events)) throw httpError(400, 'events must be an array');
+  return events.map((event) => {
+    const type = String(event && event.type || '');
+    if (!SERVER_EVENT_DEFS[type]) throw httpError(400, 'unknown event type');
+    const playerId = pid(event && event.playerId, pset);
+    if (!playerId) throw httpError(400, 'unknown player');
+    const ts = event && event.ts ? new Date(event.ts) : new Date();
+    if (Number.isNaN(ts.getTime())) throw httpError(400, 'bad event timestamp');
+    return { type, playerId, ts: ts.toISOString() };
+  });
+}
+
+function serverBallsLeader(game, scores) {
+  if (!game.players.length) return null;
+  return [...game.players].sort((a, b) => scores[b.id].balls - scores[a.id].balls)[0] || null;
+}
+
+async function initOwnershipSchema() {
+  await pool.query(`
+    ALTER TABLE IF EXISTS series ADD COLUMN IF NOT EXISTS created_by_sub text;
+    ALTER TABLE IF EXISTS games ADD COLUMN IF NOT EXISTS created_by_sub text;
+  `);
+  await pool.query(`
+    UPDATE games g
+       SET created_by_sub = e.created_by_sub
+      FROM (
+        SELECT DISTINCT ON (game_id) game_id, created_by_sub
+        FROM game_events
+        WHERE created_by_sub IS NOT NULL
+        ORDER BY game_id, seq
+      ) e
+     WHERE g.id=e.game_id AND g.created_by_sub IS NULL
+  `);
+  await pool.query(`
+    UPDATE series s
+       SET created_by_sub = g.created_by_sub
+      FROM (
+        SELECT DISTINCT ON (series_id) series_id, created_by_sub
+        FROM games
+        WHERE series_id IS NOT NULL AND created_by_sub IS NOT NULL
+        ORDER BY series_id, created_at
+      ) g
+     WHERE s.id=g.series_id AND s.created_by_sub IS NULL
+  `);
+  console.log('Ownership schema ready');
+}
 
 function computeServerGameState(game) {
   const scores = {};
@@ -430,19 +549,20 @@ function buildAdminChatPrompt(prompt, images) {
 async function listVisibleSeries(user) {
   if (isAdmin(user)) {
     return (await pool.query(
-      'SELECT id, name, status, created_at AS "createdAt", finished_at AS "finishedAt" FROM series ORDER BY created_at DESC'
+      'SELECT id, name, status, created_at AS "createdAt", finished_at AS "finishedAt", true AS "canEditScore" FROM series ORDER BY created_at DESC'
     )).rows;
   }
   const me = await myPlayer(user.sub);
-  if (!me) return [];
+  const myPlayerId = me ? me.id : null;
   return (await pool.query(
-    `SELECT DISTINCT s.id, s.name, s.status, s.created_at AS "createdAt", s.finished_at AS "finishedAt"
+    `SELECT DISTINCT s.id, s.name, s.status, s.created_at AS "createdAt", s.finished_at AS "finishedAt",
+            (s.created_by_sub=$2) AS "canEditScore"
      FROM series s
-     JOIN games g ON g.series_id=s.id
-     JOIN game_players gp ON gp.game_id=g.id
-     WHERE gp.player_id=$1
+     LEFT JOIN games g ON g.series_id=s.id
+     LEFT JOIN game_players gp ON gp.game_id=g.id
+     WHERE s.created_by_sub=$2 OR gp.player_id=$1
      ORDER BY s.created_at DESC`,
-    [me.id]
+    [myPlayerId, user.sub]
   )).rows;
 }
 
@@ -469,14 +589,15 @@ app.get('/api/accounts', requireAuth, async (req, res) => {
 // активная игра/серия + привязан ли текущий пользователь (его игрок в составе)
 app.get('/api/active', requireAuth, async (req, res) => {
   const gr = (await pool.query("SELECT id FROM games WHERE status='active' ORDER BY created_at DESC LIMIT 1")).rows[0];
-  const game = gr ? await loadGame(gr.id) : null;
+  const game = gr ? await loadGameForUser(gr.id, req.session.user) : null;
   const series = (await pool.query(
-    "SELECT id, name, status, created_at AS \"createdAt\" FROM series WHERE status='active' ORDER BY created_at DESC LIMIT 1"
+    'SELECT id, name, status, created_at AS "createdAt", (created_by_sub=$1 OR $2) AS "canEditScore" FROM series WHERE status=\'active\' ORDER BY created_at DESC LIMIT 1',
+    [req.session.user.sub, isAdmin(req.session.user)]
   )).rows[0] || null;
   const me = await myPlayer(req.session.user.sub);
   const attached = !!(me && game && game.players.some(p => p.id === me.id));
-  // активную игру показываем только её участнику или админу
-  const visibleGame = (attached || isAdmin(req.session.user)) ? game : null;
+  // активную игру показываем участнику, владельцу игры/серии или админу
+  const visibleGame = (attached || (game && game.canEditScore) || isAdmin(req.session.user)) ? game : null;
   res.json({ game: visibleGame, series, myPlayerId: me ? me.id : null, attached });
 });
 
@@ -531,23 +652,29 @@ app.get('/api/series', requireAuth, async (req, res) => {
 });
 app.post('/api/series', requireAuth, async (req, res) => {
   const r = await pool.query(
-    'INSERT INTO series (name, status) VALUES ($1, $2) RETURNING id, name, status, created_at AS "createdAt", finished_at AS "finishedAt"',
-    [(req.body.name || '').trim() || null, 'active']
+    'INSERT INTO series (name, status, created_by_sub) VALUES ($1, $2, $3) RETURNING id, name, status, created_at AS "createdAt", finished_at AS "finishedAt", true AS "canEditScore"',
+    [(req.body.name || '').trim() || null, 'active', req.session.user.sub]
   );
   broadcast({ type: 'activeChanged' });
   res.status(201).json(r.rows[0]);
 });
 app.get('/api/series/:id', requireAuth, async (req, res) => {
   const r = await pool.query(
-    'SELECT id, name, status, created_at AS "createdAt", finished_at AS "finishedAt" FROM series WHERE id=$1', [req.params.id]
+    `SELECT id, name, status, created_at AS "createdAt", finished_at AS "finishedAt",
+            (($2::text IS NOT NULL AND created_by_sub=$2) OR $3) AS "canEditScore"
+     FROM series WHERE id=$1`,
+    [req.params.id, req.session.user.sub, isAdmin(req.session.user)]
   );
   r.rows[0] ? res.json(r.rows[0]) : res.status(404).json({ error: 'not found' });
 });
 app.put('/api/series/:id', requireAuth, async (req, res) => {
   const b = req.body;
   const r = await pool.query(
-    'UPDATE series SET name=COALESCE($2,name), status=COALESCE($3,status), finished_at=$4 WHERE id=$1 RETURNING id, name, status, created_at AS "createdAt", finished_at AS "finishedAt"',
-    [req.params.id, b.name ?? null, b.status ?? null, b.finishedAt ?? null]
+    `UPDATE series SET name=COALESCE($2,name), status=COALESCE($3,status), finished_at=$4
+      WHERE id=$1
+      RETURNING id, name, status, created_at AS "createdAt", finished_at AS "finishedAt",
+                (($5::text IS NOT NULL AND created_by_sub=$5) OR $6) AS "canEditScore"`,
+    [req.params.id, b.name ?? null, b.status ?? null, b.finishedAt ?? null, req.session.user.sub, isAdmin(req.session.user)]
   );
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   broadcast({ type: 'activeChanged' });
@@ -566,20 +693,25 @@ app.get('/api/games', requireAuth, async (req, res) => {
     rows = (await pool.query('SELECT id FROM games ORDER BY created_at DESC')).rows;
   } else {
     const me = await myPlayer(req.session.user.sub);
-    if (!me) return res.json([]);
+    const myPlayerId = me ? me.id : null;
     rows = (await pool.query(
-      `SELECT g.id FROM games g JOIN game_players gp ON gp.game_id=g.id
-       WHERE gp.player_id=$1 ORDER BY g.created_at DESC`, [me.id]
+      `SELECT DISTINCT g.id, g.created_at
+       FROM games g
+       LEFT JOIN game_players gp ON gp.game_id=g.id
+       LEFT JOIN series s ON s.id=g.series_id
+       WHERE gp.player_id=$1 OR g.created_by_sub=$2 OR s.created_by_sub=$2
+       ORDER BY g.created_at DESC`,
+      [myPlayerId, req.session.user.sub]
     )).rows;
   }
-  res.json(await Promise.all(rows.map(r => loadGame(r.id))));
+  res.json(await Promise.all(rows.map(r => loadGameForUser(r.id, req.session.user))));
 });
 app.get('/api/games/:id', requireAuth, async (req, res) => {
-  const g = await loadGame(req.params.id);
+  const g = await loadGameForUser(req.params.id, req.session.user);
   if (!g) return res.status(404).json({ error: 'not found' });
   if (!isAdmin(req.session.user)) {
     const me = await myPlayer(req.session.user.sub);
-    if (!me || !g.players.some(p => p.id === me.id)) return res.status(403).json({ error: 'forbidden' });
+    if ((!me || !g.players.some(p => p.id === me.id)) && !g.canEditScore) return res.status(403).json({ error: 'forbidden' });
   }
   res.json(g);
 });
@@ -590,17 +722,17 @@ app.post('/api/games', requireAuth, async (req, res) => {
     await client.query('BEGIN');
     const pset = new Set((await client.query('SELECT id FROM players')).rows.map(r => r.id));
     const g = (await client.query(
-      `INSERT INTO games (series_id, status, target_balls, final_scores, winner_player_id, points_leader_player_id)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      `INSERT INTO games (series_id, status, target_balls, final_scores, winner_player_id, points_leader_player_id, created_by_sub)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
       [b.seriesId || null, b.status || 'active', b.targetBalls ?? null,
-       b.finalScores ? JSON.stringify(b.finalScores) : null, pid(b.winnerId, pset), pid(b.pointsLeaderId, pset)]
+       b.finalScores ? JSON.stringify(b.finalScores) : null, pid(b.winnerId, pset), pid(b.pointsLeaderId, pset), req.session.user.sub]
     )).rows[0];
     await writeRoster(client, g.id, b.players || [], pset);
-    await writeEvents(client, g.id, b.events || [], pset);
+    await writeEvents(client, g.id, cleanGameEvents(b.events || [], pset), pset, req.session.user.sub);
     await client.query('COMMIT');
     broadcast({ type: 'activeChanged' });
-    res.status(201).json(await loadGame(g.id));
-  } catch (e) { await client.query('ROLLBACK'); res.status(500).json({ error: e.message }); }
+    res.status(201).json(await loadGameForUser(g.id, req.session.user));
+  } catch (e) { await client.query('ROLLBACK'); res.status(e.statusCode || 500).json({ error: e.message }); }
   finally { client.release(); }
 });
 app.put('/api/games/:id', requireAuth, async (req, res) => {
@@ -609,7 +741,26 @@ app.put('/api/games/:id', requireAuth, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const exists = (await client.query('SELECT 1 FROM games WHERE id=$1', [id])).rows[0];
+    if (!exists) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
+    const inRoster = await userInGameRoster(client, req.session.user, id);
+    const canEditScore = await canEditGameScore(client, req.session.user, id);
+    if (!isAdmin(req.session.user) && !inRoster && !canEditScore) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'forbidden' });
+    }
+    let cleanEvents = null;
     const pset = new Set((await client.query('SELECT id FROM players')).rows.map(r => r.id));
+    if (Array.isArray(b.events)) {
+      cleanEvents = cleanGameEvents(b.events, pset);
+      if (!canEditScore) {
+        const currentEvents = await gameEventsFromDb(client, id);
+        if (!isLastEventRemoval(currentEvents, cleanEvents)) {
+          await client.query('ROLLBACK');
+          return res.status(403).json({ error: 'score edit forbidden' });
+        }
+      }
+    }
     const upd = await client.query(
       `UPDATE games SET series_id=COALESCE($2,series_id), status=COALESCE($3,status),
          target_balls=COALESCE($4,target_balls), finished_at=$5,
@@ -620,13 +771,59 @@ app.put('/api/games/:id', requireAuth, async (req, res) => {
     );
     if (!upd.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
     if (Array.isArray(b.players)) { await client.query('DELETE FROM game_players WHERE game_id=$1', [id]); await writeRoster(client, id, b.players, pset); }
-    if (Array.isArray(b.events))  { await client.query('DELETE FROM game_events WHERE game_id=$1', [id]); await writeEvents(client, id, b.events, pset); }
+    if (cleanEvents)  { await client.query('DELETE FROM game_events WHERE game_id=$1', [id]); await writeEvents(client, id, cleanEvents, pset, req.session.user.sub); }
     await client.query('COMMIT');
     broadcast({ type: 'gameUpdated', gameId: id, ...(mutationId ? { mutationId } : {}) });
     broadcast({ type: 'activeChanged' });
-    res.json(await loadGame(id));
-  } catch (e) { await client.query('ROLLBACK'); res.status(500).json({ error: e.message }); }
+    res.json(await loadGameForUser(id, req.session.user));
+  } catch (e) { await client.query('ROLLBACK'); res.status(e.statusCode || 500).json({ error: e.message }); }
   finally { client.release(); }
+});
+app.put('/api/games/:id/score', requireAuth, async (req, res) => {
+  const id = req.params.id;
+  const mutationId = typeof req.body.mutationId === 'string' ? req.body.mutationId : null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const row = (await client.query('SELECT id, status FROM games WHERE id=$1 FOR UPDATE', [id])).rows[0];
+    if (!row) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
+    if (!await canEditGameScore(client, req.session.user, id)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'forbidden' });
+    }
+
+    const pset = await gamePlayerIdSet(client, id);
+    const events = cleanGameEvents(req.body.events, pset);
+    await client.query('DELETE FROM game_events WHERE game_id=$1', [id]);
+    await writeEvents(client, id, events, pset, req.session.user.sub);
+
+    const game = await loadGameFromDb(client, id);
+    if (game.status === 'finished') {
+      const st = computeServerGameState(game);
+      const winner = st.firstWinner || serverBallsLeader(game, st.scores);
+      await client.query(
+        `UPDATE games
+            SET final_scores=$2::jsonb, winner_player_id=$3, points_leader_player_id=$4
+          WHERE id=$1`,
+        [id, JSON.stringify(st.scores), winner ? winner.id : null, st.pointsLeader ? st.pointsLeader.id : null]
+      );
+    } else {
+      await client.query(
+        'UPDATE games SET final_scores=NULL, winner_player_id=NULL, points_leader_player_id=NULL, finished_at=NULL WHERE id=$1',
+        [id]
+      );
+    }
+
+    await client.query('COMMIT');
+    broadcast({ type: 'gameUpdated', gameId: id, ...(mutationId ? { mutationId } : {}) });
+    broadcast({ type: 'activeChanged' });
+    res.json(await loadGameForUser(id, req.session.user));
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(e.statusCode || 500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
 });
 app.delete('/api/games/:id', requireAuth, async (req, res) => {
   await pool.query('DELETE FROM games WHERE id=$1', [req.params.id]);
@@ -640,6 +837,7 @@ app.post('/api/games/:id/events', requireAuth, async (req, res) => {
   const { type, playerId } = req.body;
   const mutationId = typeof req.body.mutationId === 'string' ? req.body.mutationId : null;
   if (!type) return res.status(400).json({ error: 'type required' });
+  if (!SERVER_EVENT_DEFS[type]) return res.status(400).json({ error: 'unknown event type' });
   const me = await myPlayer(req.session.user.sub);
   if (!me) return res.status(403).json({ error: 'not a linked player' });
   const inRoster = (await pool.query('SELECT 1 FROM game_players WHERE game_id=$1 AND player_id=$2', [gameId, me.id])).rows[0];
@@ -653,13 +851,15 @@ app.post('/api/games/:id/events', requireAuth, async (req, res) => {
     const st = game ? computeServerGameState(game) : null;
     eventType = serverEffectiveEventType(type, st && st.firstWinner);
   }
-  const pset = new Set((await pool.query('SELECT id FROM players')).rows.map(r => r.id));
+  const pset = await gamePlayerIdSet(pool, gameId);
+  const eventPlayerId = pid(playerId, pset);
+  if (!eventPlayerId) return res.status(400).json({ error: 'unknown player' });
   const seq = (await pool.query('SELECT COALESCE(MAX(seq),-1)+1 AS n FROM game_events WHERE game_id=$1', [gameId])).rows[0].n;
   const inserted = await pool.query(
     `INSERT INTO game_events (game_id, seq, player_id, type, created_by_sub)
      VALUES ($1,$2,$3,$4,$5)
      RETURNING seq, player_id AS "playerId", type, created_at AS ts`,
-    [gameId, seq, pid(playerId, pset), eventType, req.session.user.sub]
+    [gameId, seq, eventPlayerId, eventType, req.session.user.sub]
   );
   broadcast({ type: 'gameUpdated', gameId, ...(mutationId ? { mutationId } : {}) });
   res.status(201).json({ ok: true, seq, event: inserted.rows[0] });
@@ -672,11 +872,11 @@ async function writeRoster(client, gameId, players, pset) {
       [gameId, i, pid(p.id, pset), p.name || '']);
   }
 }
-async function writeEvents(client, gameId, events, pset) {
+async function writeEvents(client, gameId, events, pset, createdBySub = null) {
   for (let i = 0; i < events.length; i++) {
     const e = events[i];
-    await client.query('INSERT INTO game_events (game_id, seq, player_id, type, created_at) VALUES ($1,$2,$3,$4,$5)',
-      [gameId, i, pid(e.playerId, pset), e.type, e.ts || new Date().toISOString()]);
+    await client.query('INSERT INTO game_events (game_id, seq, player_id, type, created_at, created_by_sub) VALUES ($1,$2,$3,$4,$5,$6)',
+      [gameId, i, pid(e.playerId, pset), e.type, e.ts || new Date().toISOString(), e.createdBySub || e.created_by_sub || createdBySub]);
   }
 }
 
@@ -1028,6 +1228,7 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 initOidc().then(async () => {
+  await initOwnershipSchema();
   await initPokerSchema();
   await runStartupDataRepairs();
   server.listen(PORT, () => console.log(`Ташкент v2 на :${PORT}`));

@@ -1188,6 +1188,10 @@ label {
   font-size: 13px;
 }
 
+.event-log .item.editable {
+  grid-template-columns: minmax(0, 1fr) auto auto minmax(0, auto);
+}
+
 .event-log .item:last-child {
   border-bottom: 0;
 }
@@ -1206,6 +1210,40 @@ label {
 .event-log .delta {
   color: var(--muted);
   text-align: right;
+}
+
+.event-tools,
+.event-edit-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.event-tools button {
+  min-height: 30px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.event-edit-toolbar {
+  margin: 0 0 10px;
+}
+
+.event-editor-dialog {
+  width: min(420px, calc(100vw - 28px));
+  padding: 0;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+}
+
+.event-editor-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.62);
+}
+
+.event-editor-dialog .card {
+  margin: 0;
 }
 
 .player-admin {
@@ -1784,9 +1822,18 @@ dialog.win-screen .donate-cta .donate-cta-btn {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
+  .event-log .item.editable {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
   .event-log .delta {
     grid-column: 1 / -1;
     text-align: left;
+  }
+
+  .event-log .event-tools {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
   }
 }
 
