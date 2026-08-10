@@ -256,6 +256,7 @@ const myPlayer = async (sub) =>
   (await pool.query('SELECT id FROM players WHERE account_sub=$1', [sub])).rows[0] || null;
 const isAdmin = (user) => !!user && user.username === 'spellful';
 const repairPrevIndex = (idx, n) => (idx - 1 + n) % n;
+const hasBodyField = (obj, key) => Object.prototype.hasOwnProperty.call(obj || {}, key);
 
 function httpError(statusCode, message) {
   const err = new Error(message);
@@ -669,12 +670,19 @@ app.get('/api/series/:id', requireAuth, async (req, res) => {
 });
 app.put('/api/series/:id', requireAuth, async (req, res) => {
   const b = req.body;
+  const hasName = hasBodyField(b, 'name');
+  const hasStatus = hasBodyField(b, 'status');
+  const hasFinishedAt = hasBodyField(b, 'finishedAt');
   const r = await pool.query(
-    `UPDATE series SET name=COALESCE($2,name), status=COALESCE($3,status), finished_at=$4
+    `UPDATE series SET
+        name=CASE WHEN $7 THEN $2::text ELSE name END,
+        status=CASE WHEN $8 THEN $3::text ELSE status END,
+        finished_at=CASE WHEN $9 THEN $4::timestamptz ELSE finished_at END
       WHERE id=$1
       RETURNING id, name, status, created_at AS "createdAt", finished_at AS "finishedAt",
                 (($5::text IS NOT NULL AND created_by_sub=$5) OR $6) AS "canEditScore"`,
-    [req.params.id, b.name ?? null, b.status ?? null, b.finishedAt ?? null, req.session.user.sub, isAdmin(req.session.user)]
+    [req.params.id, b.name ?? null, b.status ?? null, b.finishedAt ?? null, req.session.user.sub, isAdmin(req.session.user),
+     hasName, hasStatus, hasFinishedAt]
   );
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   broadcast({ type: 'activeChanged' });
@@ -761,13 +769,27 @@ app.put('/api/games/:id', requireAuth, async (req, res) => {
         }
       }
     }
+    const hasSeriesId = hasBodyField(b, 'seriesId');
+    const hasStatus = hasBodyField(b, 'status');
+    const hasTargetBalls = hasBodyField(b, 'targetBalls');
+    const hasFinishedAt = hasBodyField(b, 'finishedAt');
+    const hasFinalScores = hasBodyField(b, 'finalScores');
+    const hasWinnerId = hasBodyField(b, 'winnerId');
+    const hasPointsLeaderId = hasBodyField(b, 'pointsLeaderId');
     const upd = await client.query(
-      `UPDATE games SET series_id=COALESCE($2,series_id), status=COALESCE($3,status),
-         target_balls=COALESCE($4,target_balls), finished_at=$5,
-         final_scores=COALESCE($6,final_scores), winner_player_id=$7, points_leader_player_id=$8
+      `UPDATE games SET
+         series_id=CASE WHEN $9 THEN $2::uuid ELSE series_id END,
+         status=CASE WHEN $10 THEN $3::text ELSE status END,
+         target_balls=CASE WHEN $11 THEN $4::int ELSE target_balls END,
+         finished_at=CASE WHEN $12 THEN $5::timestamptz ELSE finished_at END,
+         final_scores=CASE WHEN $13 THEN $6::jsonb ELSE final_scores END,
+         winner_player_id=CASE WHEN $14 THEN $7::uuid ELSE winner_player_id END,
+         points_leader_player_id=CASE WHEN $15 THEN $8::uuid ELSE points_leader_player_id END
        WHERE id=$1 RETURNING id`,
-      [id, b.seriesId ?? null, b.status ?? null, b.targetBalls ?? null, b.finishedAt ?? null,
-       b.finalScores ? JSON.stringify(b.finalScores) : null, pid(b.winnerId, pset), pid(b.pointsLeaderId, pset)]
+      [id, b.seriesId || null, b.status ?? null, b.targetBalls ?? null, b.finishedAt ?? null,
+       b.finalScores == null ? null : JSON.stringify(b.finalScores),
+       pid(b.winnerId, pset), pid(b.pointsLeaderId, pset),
+       hasSeriesId, hasStatus, hasTargetBalls, hasFinishedAt, hasFinalScores, hasWinnerId, hasPointsLeaderId]
     );
     if (!upd.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
     if (Array.isArray(b.players)) { await client.query('DELETE FROM game_players WHERE game_id=$1', [id]); await writeRoster(client, id, b.players, pset); }
@@ -838,10 +860,12 @@ app.post('/api/games/:id/events', requireAuth, async (req, res) => {
   const mutationId = typeof req.body.mutationId === 'string' ? req.body.mutationId : null;
   if (!type) return res.status(400).json({ error: 'type required' });
   if (!SERVER_EVENT_DEFS[type]) return res.status(400).json({ error: 'unknown event type' });
-  const me = await myPlayer(req.session.user.sub);
-  if (!me) return res.status(403).json({ error: 'not a linked player' });
-  const inRoster = (await pool.query('SELECT 1 FROM game_players WHERE game_id=$1 AND player_id=$2', [gameId, me.id])).rows[0];
-  if (!inRoster) return res.status(403).json({ error: 'not in roster' });
+  if (!isAdmin(req.session.user)) {
+    const me = await myPlayer(req.session.user.sub);
+    if (!me) return res.status(403).json({ error: 'not a linked player' });
+    const inRoster = (await pool.query('SELECT 1 FROM game_players WHERE game_id=$1 AND player_id=$2', [gameId, me.id])).rows[0];
+    if (!inRoster) return res.status(403).json({ error: 'not in roster' });
+  }
   const g = (await pool.query('SELECT status FROM games WHERE id=$1', [gameId])).rows[0];
   if (!g) return res.status(404).json({ error: 'not found' });
   if (g.status !== 'active') return res.status(409).json({ error: 'game not active' });

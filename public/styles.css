@@ -530,6 +530,18 @@ label {
   margin-bottom: 12px;
 }
 
+.admin-edit-card {
+  border-color: var(--accent-line);
+  background:
+    linear-gradient(135deg, var(--accent-soft), transparent 62%),
+    var(--panel);
+}
+
+.admin-edit-grid {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  align-items: end;
+}
+
 .stack {
   display: flex;
   flex-direction: column;

@@ -212,6 +212,20 @@ function fmtDuration(startIso, endIso) {
   return h > 0 ? `${h}ч ${m % 60}м` : `${m}м`;
 }
 
+function dateTimeLocalValue(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function dateTimeLocalToISO(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 function inlineMarkdown(line) {
   return esc(line)
     .replace(/`([^`]+)`/g, '<code>$1</code>')
@@ -870,6 +884,170 @@ function uniqueBallsLeader(game, scores) {
   return leaders.length === 1 ? leaders[0] : null;
 }
 
+function ballsLeaderFromScores(game, scores) {
+  if (!game.players.length) return null;
+  return [...game.players].sort((a, b) => scores[b.id].balls - scores[a.id].balls)[0] || null;
+}
+
+function adminSeriesOptionsHTML(seriesList, selectedId) {
+  return `
+    <option value="" ${!selectedId ? 'selected' : ''}>Без серии</option>
+    ${seriesList.map((s) => `
+      <option value="${esc(s.id)}" ${s.id === selectedId ? 'selected' : ''}>
+        ${esc(s.name || 'Серия от ' + fmtDateOnly(s.createdAt))}
+      </option>
+    `).join('')}
+  `;
+}
+
+function adminSeriesEditorHTML(series) {
+  if (!isDeveloperUser()) return '';
+  return `
+    <section class="card admin-edit-card" id="adminSeriesEditor">
+      <h2>Админ: серия</h2>
+      <div class="form-grid admin-edit-grid">
+        <div>
+          <label for="adminSeriesName">Название</label>
+          <input type="text" id="adminSeriesName" value="${esc(series.name || '')}" placeholder="Серия от ${esc(fmtDateOnly(series.createdAt))}" />
+        </div>
+        <div>
+          <label for="adminSeriesStatus">Статус</label>
+          <select id="adminSeriesStatus">
+            <option value="active" ${series.status === 'active' ? 'selected' : ''}>Идёт</option>
+            <option value="finished" ${series.status === 'finished' ? 'selected' : ''}>Завершена</option>
+          </select>
+        </div>
+        <div>
+          <label for="adminSeriesFinishedAt">Завершена</label>
+          <input type="datetime-local" id="adminSeriesFinishedAt" value="${esc(dateTimeLocalValue(series.finishedAt))}" />
+        </div>
+      </div>
+      <button id="adminSeriesSave" class="shrink">Сохранить серию</button>
+    </section>
+  `;
+}
+
+function adminGameEditorHTML(game, seriesList) {
+  if (!isDeveloperUser()) return '';
+  return `
+    <section class="card admin-edit-card" id="adminGameEditor">
+      <h2>Админ: игра</h2>
+      <div class="form-grid admin-edit-grid">
+        <div>
+          <label for="adminGameSeries">Серия</label>
+          <select id="adminGameSeries">${adminSeriesOptionsHTML(seriesList, game.seriesId)}</select>
+        </div>
+        <div>
+          <label for="adminGameTarget">Шаров до победы</label>
+          <input type="number" id="adminGameTarget" min="1" max="15" value="${esc(game.targetBalls || 6)}" />
+        </div>
+        <div>
+          <label for="adminGameStatus">Статус</label>
+          <select id="adminGameStatus">
+            <option value="active" ${game.status === 'active' ? 'selected' : ''}>Идёт</option>
+            <option value="finished" ${game.status === 'finished' ? 'selected' : ''}>Завершена</option>
+          </select>
+        </div>
+        <div>
+          <label for="adminGameFinishedAt">Завершена</label>
+          <input type="datetime-local" id="adminGameFinishedAt" value="${esc(dateTimeLocalValue(game.finishedAt))}" />
+        </div>
+      </div>
+      <button id="adminGameSave" class="shrink">Сохранить игру</button>
+    </section>
+  `;
+}
+
+function gameStatusPayloadFromEvents(game, status, finishedAt) {
+  if (status !== 'finished') {
+    return {
+      finishedAt: null,
+      finalScores: null,
+      winnerId: null,
+      pointsLeaderId: null,
+    };
+  }
+  const st = computeState(game);
+  const winner = st.firstWinner || ballsLeaderFromScores(game, st.scores);
+  return {
+    finishedAt: finishedAt || new Date().toISOString(),
+    finalScores: st.scores,
+    winnerId: winner ? winner.id : null,
+    pointsLeaderId: st.pointsLeader ? st.pointsLeader.id : null,
+  };
+}
+
+function setupAdminSeriesEditor(series) {
+  const saveBtn = document.getElementById('adminSeriesSave');
+  if (!saveBtn || !isDeveloperUser()) return;
+  const statusEl = document.getElementById('adminSeriesStatus');
+  const finishedEl = document.getElementById('adminSeriesFinishedAt');
+  const syncFinished = () => {
+    finishedEl.disabled = statusEl.value !== 'finished';
+    if (statusEl.value === 'finished' && !finishedEl.value) {
+      finishedEl.value = dateTimeLocalValue(new Date().toISOString());
+    }
+  };
+  statusEl.addEventListener('change', syncFinished);
+  syncFinished();
+
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true;
+    try {
+      const status = statusEl.value === 'finished' ? 'finished' : 'active';
+      await api.put(`/api/series/${series.id}`, {
+        name: document.getElementById('adminSeriesName').value.trim() || null,
+        status,
+        finishedAt: status === 'finished' ? (dateTimeLocalToISO(finishedEl.value) || new Date().toISOString()) : null,
+      });
+      await refreshActive();
+      showToast('Серия сохранена');
+      route();
+    } catch (err) {
+      saveBtn.disabled = false;
+      showToast(err.message || 'Не удалось сохранить серию');
+    }
+  });
+}
+
+function setupAdminGameEditor(game, onSaved) {
+  const saveBtn = document.getElementById('adminGameSave');
+  if (!saveBtn || !isDeveloperUser()) return;
+  const statusEl = document.getElementById('adminGameStatus');
+  const finishedEl = document.getElementById('adminGameFinishedAt');
+  const syncFinished = () => {
+    finishedEl.disabled = statusEl.value !== 'finished';
+    if (statusEl.value === 'finished' && !finishedEl.value) {
+      finishedEl.value = dateTimeLocalValue(new Date().toISOString());
+    }
+  };
+  statusEl.addEventListener('change', syncFinished);
+  syncFinished();
+
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true;
+    try {
+      const target = Math.max(1, Math.min(15, parseInt(document.getElementById('adminGameTarget').value, 10) || game.targetBalls || 6));
+      const status = statusEl.value === 'finished' ? 'finished' : 'active';
+      const draft = { ...game, targetBalls: target, status };
+      const payload = {
+        seriesId: document.getElementById('adminGameSeries').value || null,
+        targetBalls: target,
+        status,
+        ...gameStatusPayloadFromEvents(draft, status, status === 'finished' ? dateTimeLocalToISO(finishedEl.value) : null),
+      };
+      const saved = await api.put(`/api/games/${game.id}`, payload);
+      await refreshActive();
+      showToast('Игра сохранена');
+      if (typeof onSaved === 'function') await onSaved(saved);
+      else route();
+    } catch (err) {
+      saveBtn.disabled = false;
+      showToast(err.message || 'Не удалось сохранить игру');
+    }
+  });
+}
+
 function scoreViewSwitchHTML(activeView, dataAttr, labels = { cards: 'Текущий', sheet: 'Столбцы' }) {
   return `
     <div class="live-view-switch" role="group" aria-label="Вид счёта">
@@ -1090,7 +1268,7 @@ function accessForGame(game) {
   return {
     myPlayerId,
     inRoster,
-    canControl: game.status === 'active' && (inRoster || activeSaysAttached),
+    canControl: game.status === 'active' && (inRoster || activeSaysAttached || isDeveloperUser()),
   };
 }
 
@@ -1715,6 +1893,8 @@ async function renderSeries(match) {
     <h1>${esc(series.name || 'Серия от ' + fmtDateOnly(series.createdAt))}</h1>
     <p class="muted">${fmtDate(series.createdAt)}${series.finishedAt ? ' → завершена ' + fmtDate(series.finishedAt) : ''} · игр: ${seriesGames.length}</p>
 
+    ${adminSeriesEditorHTML(series)}
+
     ${isActive ? `
       <div class="toolbar card">
         <a href="#/new-game/${esc(id)}" class="btn">+ Новая игра в серии</a>
@@ -1759,6 +1939,7 @@ async function renderSeries(match) {
     </div>
   `;
 
+  setupAdminSeriesEditor(series);
   if (isActive) {
     document.getElementById('endSeriesBtn').addEventListener('click', async () => {
       const unfinished = seriesGames.some((g) => g.status === 'active');
@@ -1956,6 +2137,7 @@ async function renderNewGame(match) {
 async function renderLiveGame(match, token) {
   const id = match[1];
   let game = null;
+  let adminSeries = [];
   let pendingEventType = null;
   let queuedAfterTurnEventType = null;
   state.currentGameId = id;
@@ -1973,6 +2155,7 @@ async function renderLiveGame(match, token) {
 
   state.reloadLiveGame = loadAndRender;
   await refreshActive();
+  if (isDeveloperUser()) adminSeries = await api.get('/api/series');
   await loadAndRender();
 
   async function postGameEvent(type, playerId) {
@@ -2184,6 +2367,8 @@ async function renderLiveGame(match, token) {
           </div>
         </div>
 
+        ${adminGameEditorHTML(game, adminSeries)}
+
         ${!isFinished && !canControl ? `
           <div class="notice info">
             <strong>Только просмотр</strong>
@@ -2263,6 +2448,11 @@ async function renderLiveGame(match, token) {
       setLiveGameView(b.dataset.liveView);
       render();
     }));
+    setupAdminGameEditor(game, async (saved) => {
+      if (token !== state.routeToken) return;
+      game = saved;
+      render();
+    });
     setupScoreEditControls({ getGame: () => game, replaceEvents: replaceScoreEvents });
     const undoBtn = document.getElementById('undoBtn'); if (undoBtn) undoBtn.addEventListener('click', undoLast);
     const endBtn = document.getElementById('endBtn'); if (endBtn) endBtn.addEventListener('click', endGame);
@@ -2300,7 +2490,11 @@ async function renderChangelog() {
 
 async function renderGameDetail(match) {
   const id = match[1];
-  let game = await api.get(`/api/games/${id}`);
+  const [initialGame, adminSeries] = await Promise.all([
+    api.get(`/api/games/${id}`),
+    isDeveloperUser() ? api.get('/api/series') : Promise.resolve([]),
+  ]);
+  let game = initialGame;
   if (!game || game.error) { app.innerHTML = '<p>Игра не найдена.</p>'; return; }
   const st = computeState(game);
   const winner = game.players.find((p) => p.id === game.winnerId);
@@ -2324,6 +2518,8 @@ async function renderGameDetail(match) {
     ${pointsLeader && (!winner || pointsLeader.id !== winner.id) ? `<p>🥇 Лидер по очкам: <strong>${esc(pointsLeader.name)}</strong></p>` : ''}
     <p class="muted">${fmtDate(game.createdAt)} · до ${esc(game.targetBalls)} шаров ${duration ? '· ' + duration : ''}</p>
 
+    ${adminGameEditorHTML(game, adminSeries)}
+
     ${gameDetailViewSwitchHTML(detailView)}
     ${scoreViewHTML}
 
@@ -2343,6 +2539,13 @@ async function renderGameDetail(match) {
     setGameDetailView(b.dataset.detailView);
     renderGameDetail(match);
   }));
+  setupAdminGameEditor(game, async (saved) => {
+    if (saved.status === 'active') {
+      location.hash = `#/game/${saved.id}`;
+      return;
+    }
+    renderGameDetail(match);
+  });
   setupScoreEditControls({
     getGame: () => game,
     replaceEvents: async (events) => {
