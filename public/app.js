@@ -297,7 +297,103 @@ function markdownToHTML(markdown) {
 
   closeCode();
   closeList();
-  return html || '<p class="empty-state">Change log пока пуст.</p>';
+  return html || '<p class="empty-state">История изменений пока пуста.</p>';
+}
+
+function splitChangelog(markdown) {
+  const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
+  const intro = [];
+  const sections = [];
+  let current = null;
+
+  for (const line of lines) {
+    if (/^#\s+/.test(line)) continue;
+    if (/^##\s+/.test(line)) {
+      if (current) sections.push(current.join('\n').trim());
+      current = [line];
+      continue;
+    }
+    if (current) current.push(line);
+    else intro.push(line);
+  }
+  if (current) sections.push(current.join('\n').trim());
+
+  return {
+    intro: intro.join('\n').trim(),
+    sections: sections.filter(Boolean),
+  };
+}
+
+function changelogPreviewHTML(markdown, visibleCount = 2) {
+  const { intro, sections } = splitChangelog(markdown);
+  if (sections.length === 0) return markdownToHTML(intro || markdown);
+
+  const visible = sections.slice(0, visibleCount).map(markdownToHTML).join('');
+  const archive = sections.slice(visibleCount);
+  const archiveHTML = archive.map(markdownToHTML).join('');
+
+  return `
+    ${intro ? markdownToHTML(intro) : ''}
+    ${visible}
+    ${archive.length ? `
+      <details class="changelog-spoiler">
+        <summary>Показать предыдущие обновления (${archive.length})</summary>
+        <div class="changelog-spoiler-body">
+          ${archiveHTML}
+        </div>
+      </details>
+    ` : ''}
+  `;
+}
+
+async function openChangelogDialog(options = {}) {
+  const existing = document.querySelector('.changelog-dialog');
+  if (existing) {
+    if (existing.open) existing.close();
+    else existing.remove();
+  }
+
+  const dialog = document.createElement('dialog');
+  dialog.className = 'changelog-dialog';
+  dialog.innerHTML = `
+    <section class="changelog-dialog-inner" aria-label="История изменений">
+      <div class="changelog-dialog-header">
+        <h2>История изменений</h2>
+        <button class="changelog-close" type="button" data-close-changelog aria-label="Закрыть">×</button>
+      </div>
+      <div class="changelog-dialog-content changelog">
+        <p class="muted">Загрузка…</p>
+      </div>
+    </section>
+  `;
+  document.body.appendChild(dialog);
+
+  const close = () => {
+    if (dialog.open) dialog.close();
+    else dialog.remove();
+  };
+  dialog.querySelector('[data-close-changelog]').addEventListener('click', close);
+  dialog.addEventListener('click', (e) => {
+    if (e.target === dialog) close();
+  });
+  dialog.addEventListener('close', () => {
+    dialog.remove();
+    if (options.closeHash && (location.hash || '#/') === '#/changelog') {
+      location.hash = options.closeHash;
+    }
+  }, { once: true });
+
+  if (typeof dialog.showModal === 'function') dialog.showModal();
+  else dialog.setAttribute('open', '');
+
+  try {
+    const data = await api.get('/api/changelog');
+    const content = dialog.querySelector('.changelog-dialog-content');
+    if (content) content.innerHTML = changelogPreviewHTML(data.markdown || '');
+  } catch (err) {
+    const content = dialog.querySelector('.changelog-dialog-content');
+    if (content) content.innerHTML = `<p class="muted">Не удалось загрузить историю изменений: ${esc(err.message)}</p>`;
+  }
 }
 
 function randomPlayerOrder(selectedOrder, prevGames) {
@@ -1375,6 +1471,12 @@ async function route() {
 
 window.addEventListener('hashchange', route);
 window.addEventListener('load', boot);
+document.addEventListener('click', (e) => {
+  const link = e.target.closest('a[href="#/changelog"]');
+  if (!link) return;
+  e.preventDefault();
+  openChangelogDialog();
+});
 
 function adminChatPanelHTML() {
   if (!isDeveloperUser()) return '';
@@ -2496,14 +2598,12 @@ async function renderHistory() {
 }
 
 async function renderChangelog() {
-  const data = await api.get('/api/changelog');
   app.innerHTML = `
     <a href="#/" class="back-link">← Главная</a>
-    <h1>Change log</h1>
-    <div class="card changelog">
-      ${markdownToHTML(data.markdown || '')}
-    </div>
+    <h1>История изменений</h1>
+    <p class="muted">История изменений открыта в модальном окне.</p>
   `;
+  await openChangelogDialog({ closeHash: '#/' });
 }
 
 async function renderGameDetail(match) {

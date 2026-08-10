@@ -1286,6 +1286,57 @@ label {
     var(--panel);
 }
 
+.changelog-dialog {
+  width: min(760px, calc(100vw - 28px));
+  max-height: min(82vh, 760px);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.changelog-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.62);
+}
+
+.changelog-dialog-inner {
+  display: flex;
+  flex-direction: column;
+  max-height: min(82vh, 760px);
+}
+
+.changelog-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.changelog-dialog-header h2 {
+  margin: 0;
+}
+
+.changelog-close {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.changelog-dialog-content {
+  overflow-y: auto;
+  padding: 2px 22px 22px;
+}
+
 .changelog h1 {
   margin-bottom: 12px;
   font-size: 22px;
@@ -1327,6 +1378,22 @@ label {
 .changelog pre code {
   padding: 0;
   background: transparent;
+}
+
+.changelog-spoiler {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.changelog-spoiler summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.changelog-spoiler-body {
+  padding-top: 6px;
 }
 
 .admin-chat-composer {
