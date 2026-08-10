@@ -353,13 +353,14 @@ function showToast(message) {
 function handleActionError(err) {
   if (err.status === 403) {
     const code = err.data && err.data.error;
-    showToast(code === 'forbidden' || code === 'score edit forbidden'
+    showToast(code === 'score edit forbidden'
       ? 'Нет прав на редактирование счёта'
-      : 'Вы не в составе этой игры');
+      : 'Нет прав на это действие');
     return;
   }
   if (err.status === 409) {
-    showToast('Игра уже завершена');
+    const code = err.data && err.data.error;
+    showToast(code === 'series finished' ? 'Серия уже завершена' : 'Игра уже завершена');
     return;
   }
   showToast(err.message || 'Не удалось выполнить действие');
@@ -612,6 +613,19 @@ async function saveScoreEvents(game, events, mutationId = makeMutationId()) {
     return await api.put(`/api/games/${game.id}/score`, { mutationId, events });
   } finally {
     cleanupLiveMutation(mutationId);
+  }
+}
+
+async function deleteGameWithConfirm(game) {
+  if (!game || !game.canEditScore) return;
+  if (!confirm('Удалить игру навсегда?')) return;
+  const seriesId = game.seriesId;
+  try {
+    await api.del(`/api/games/${game.id}`);
+    await refreshActive();
+    location.hash = seriesId ? `#/series/${seriesId}` : '#/history';
+  } catch (err) {
+    handleActionError(err);
   }
 }
 
@@ -1962,6 +1976,14 @@ async function renderNewGame(match) {
   const seriesId = match[1];
   const [playersInitial, allGames, series] = await Promise.all([api.get('/api/players'), api.get('/api/games'), api.get(`/api/series/${seriesId}`)]);
   if (!series || series.error) { app.innerHTML = '<p>Серия не найдена.</p>'; return; }
+  if (series.status !== 'active') {
+    app.innerHTML = `
+      <a href="#/series/${esc(seriesId)}" class="back-link">← В серию</a>
+      <h1>Серия завершена</h1>
+      <p class="empty-state">Новые игры можно добавлять только в активную серию.</p>
+    `;
+    return;
+  }
   let players = playersInitial;
 
   const prevGames = allGames.filter((g) => g.seriesId === seriesId).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
@@ -2266,19 +2288,10 @@ async function renderLiveGame(match, token) {
   }
 
   async function finishGame() {
-    const st = computeState(game);
-    const winner = st.firstWinner || st.winner;
     const mutationId = makeMutationId();
     state.pendingLiveMutations.add(mutationId);
     try {
-      await api.put(`/api/games/${id}`, {
-        mutationId,
-        status: 'finished',
-        finishedAt: new Date().toISOString(),
-        winnerId: winner ? winner.id : null,
-        pointsLeaderId: st.pointsLeader ? st.pointsLeader.id : null,
-        finalScores: st.scores,
-      });
+      await api.post(`/api/games/${id}/finish`, { mutationId });
       await refreshActive();
       location.hash = `#/games/${id}`;
     } catch (err) {
@@ -2290,19 +2303,10 @@ async function renderLiveGame(match, token) {
 
   async function endGame() {
     if (!confirm('Завершить игру досрочно? Победителем будет лидер по шарам.')) return;
-    const st = computeState(game);
-    const leader = [...game.players].sort((a, b) => st.scores[b.id].balls - st.scores[a.id].balls)[0];
     const mutationId = makeMutationId();
     state.pendingLiveMutations.add(mutationId);
     try {
-      await api.put(`/api/games/${id}`, {
-        mutationId,
-        status: 'finished',
-        finishedAt: new Date().toISOString(),
-        winnerId: leader ? leader.id : null,
-        pointsLeaderId: st.pointsLeader ? st.pointsLeader.id : null,
-        finalScores: st.scores,
-      });
+      await api.post(`/api/games/${id}/finish`, { mutationId, force: true });
       await refreshActive();
       location.hash = `#/games/${id}`;
     } catch (err) {
@@ -2348,6 +2352,7 @@ async function renderLiveGame(match, token) {
     const n = game.players.length;
     const access = accessForGame(game);
     const canControl = access.canControl;
+    const canFinish = canControl || !!game.canEditScore;
     const isFinished = game.status === 'finished';
     const firstWinner = st.firstWinner || (game.winnerId ? game.players.find((p) => p.id === game.winnerId) : null);
     const shownEvents = visibleEvents(game);
@@ -2382,7 +2387,7 @@ async function renderLiveGame(match, token) {
               ${firstWinner ? `<strong>🏆 ${esc(firstWinner.name)} набрал ${esc(game.targetBalls)} шаров</strong>` : '<strong>Все шары забиты</strong>'}
               <p class="muted">${st.allBallsGone ? 'Все шары забиты.' : 'Игра продолжается — можно добить оставшиеся шары.'}</p>
             </div>
-            ${canControl ? '<button id="finishBtn">Завершить партию</button>' : '<span class="tag">ожидаем игрока</span>'}
+            ${canFinish ? '<button id="finishBtn">Завершить партию</button>' : '<span class="tag">ожидаем игрока</span>'}
           </div>
         ` : ''}
 
@@ -2416,13 +2421,25 @@ async function renderLiveGame(match, token) {
 
           <div class="game-actions">
             <button class="ghost" id="undoBtn" ${(game.events || []).length === 0 ? 'disabled' : ''}>↶ Отменить</button>
-            ${!firstWinner && !st.isGoldenPhase && !st.allBallsGone ? '<button class="ghost" id="endBtn">Завершить досрочно</button>' : ''}
+            ${canFinish && !firstWinner && !st.allBallsGone ? '<button class="ghost" id="endBtn">Завершить досрочно</button>' : ''}
+          </div>
+        ` : ''}
+
+        ${!isFinished && !canControl && canFinish && !firstWinner && !st.allBallsGone ? `
+          <div class="game-actions">
+            <button class="ghost" id="endBtn">Завершить досрочно</button>
           </div>
         ` : ''}
 
         <h2>Лог ходов (${logEvents.length})</h2>
         ${game.canEditScore ? scoreEditToolbarHTML(logEvents.length) : ''}
         <div class="card event-log">${renderEventLog()}</div>
+
+        ${game.canEditScore ? `
+          <div class="danger-zone">
+            <button class="ghost danger" id="deleteGameBtn">Удалить игру</button>
+          </div>
+        ` : ''}
 
         ${isFinished ? `
           <dialog class="win-screen" id="winDlg">
@@ -2457,6 +2474,7 @@ async function renderLiveGame(match, token) {
     const undoBtn = document.getElementById('undoBtn'); if (undoBtn) undoBtn.addEventListener('click', undoLast);
     const endBtn = document.getElementById('endBtn'); if (endBtn) endBtn.addEventListener('click', endGame);
     const finishBtn = document.getElementById('finishBtn'); if (finishBtn) finishBtn.addEventListener('click', finishGame);
+    const deleteGameBtn = document.getElementById('deleteGameBtn'); if (deleteGameBtn) deleteGameBtn.addEventListener('click', () => deleteGameWithConfirm(game));
     const dlgSeriesBtn = document.getElementById('dlgSeriesBtn'); if (dlgSeriesBtn) dlgSeriesBtn.addEventListener('click', () => { location.hash = `#/series/${game.seriesId}`; });
     const dlgHomeBtn = document.getElementById('dlgHomeBtn'); if (dlgHomeBtn) dlgHomeBtn.addEventListener('click', () => { location.hash = '#/'; });
     const dlg = document.getElementById('winDlg'); if (dlg && typeof dlg.showModal === 'function') dlg.showModal();
@@ -2531,9 +2549,11 @@ async function renderGameDetail(match) {
       ${eventLogHTML(game, logEvents, { editable: game.canEditScore })}
     </div>
 
-    <div class="danger-zone">
-      <button class="ghost danger" id="delBtn">Удалить игру</button>
-    </div>
+    ${game.canEditScore ? `
+      <div class="danger-zone">
+        <button class="ghost danger" id="delBtn">Удалить игру</button>
+      </div>
+    ` : ''}
   `;
   document.querySelectorAll('[data-detail-view]').forEach((b) => b.addEventListener('click', () => {
     setGameDetailView(b.dataset.detailView);
@@ -2558,10 +2578,6 @@ async function renderGameDetail(match) {
       }
     },
   });
-  document.getElementById('delBtn').addEventListener('click', async () => {
-    if (!confirm('Удалить игру навсегда?')) return;
-    await api.del(`/api/games/${id}`);
-    await refreshActive();
-    location.hash = game.seriesId ? `#/series/${game.seriesId}` : '#/history';
-  });
+  const delBtn = document.getElementById('delBtn');
+  if (delBtn) delBtn.addEventListener('click', () => deleteGameWithConfirm(game));
 }

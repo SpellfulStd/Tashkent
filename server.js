@@ -21,6 +21,8 @@ const ADMIN_CHAT_IMAGE_TYPES = new Map([
   ['image/webp', '.webp'],
   ['image/gif', '.gif'],
 ]);
+const SERIES_MAX_DURATION_HOURS = 24;
+const SERIES_AUTO_FINISH_INTERVAL_MS = 5 * 60 * 1000;
 const SPELLFUL_LAST_BALL_GAME_ID = '79d9f99a-4820-4d29-b9f4-d630cf3ef607';
 const SERVER_EVENT_DEFS = {
   pocket_regular: { balls: 1, points: 1,  prevDelta: -1, isDurak: false, isGolden: false, isPocket: true },
@@ -284,6 +286,28 @@ async function canEditGameScore(db, user, gameId) {
     [gameId]
   )).rows[0];
   return canEditScoreForGameRow(user, g);
+}
+
+async function canFinishGame(db, user, gameId) {
+  if (isAdmin(user)) return true;
+  return await canEditGameScore(db, user, gameId) || await userInGameRoster(db, user, gameId);
+}
+
+async function autoFinishExpiredSeries(db = pool, notify = false) {
+  const r = await db.query(
+    `UPDATE series
+        SET status='finished',
+            finished_at=COALESCE(finished_at, created_at + ($1::int * interval '1 hour'))
+      WHERE status='active'
+        AND created_at <= now() - ($1::int * interval '1 hour')
+      RETURNING id`,
+    [SERIES_MAX_DURATION_HOURS]
+  );
+  if (r.rowCount) {
+    console.log(`Auto-finished expired series: ${r.rowCount}`);
+    if (notify) broadcast({ type: 'activeChanged' });
+  }
+  return r.rowCount;
 }
 
 async function gameEventsFromDb(db, gameId) {
@@ -589,6 +613,7 @@ app.get('/api/accounts', requireAuth, async (req, res) => {
 
 // активная игра/серия + привязан ли текущий пользователь (его игрок в составе)
 app.get('/api/active', requireAuth, async (req, res) => {
+  await autoFinishExpiredSeries(pool, true);
   const gr = (await pool.query("SELECT id FROM games WHERE status='active' ORDER BY created_at DESC LIMIT 1")).rows[0];
   const game = gr ? await loadGameForUser(gr.id, req.session.user) : null;
   const series = (await pool.query(
@@ -649,6 +674,7 @@ app.delete('/api/players/:id', requireAuth, async (req, res) => {
 
 // ---- Series ----
 app.get('/api/series', requireAuth, async (req, res) => {
+  await autoFinishExpiredSeries(pool, true);
   res.json(await listVisibleSeries(req.session.user));
 });
 app.post('/api/series', requireAuth, async (req, res) => {
@@ -660,6 +686,7 @@ app.post('/api/series', requireAuth, async (req, res) => {
   res.status(201).json(r.rows[0]);
 });
 app.get('/api/series/:id', requireAuth, async (req, res) => {
+  await autoFinishExpiredSeries(pool, true);
   const r = await pool.query(
     `SELECT id, name, status, created_at AS "createdAt", finished_at AS "finishedAt",
             (($2::text IS NOT NULL AND created_by_sub=$2) OR $3) AS "canEditScore"
@@ -725,9 +752,15 @@ app.get('/api/games/:id', requireAuth, async (req, res) => {
 });
 app.post('/api/games', requireAuth, async (req, res) => {
   const b = req.body;
+  await autoFinishExpiredSeries(pool, true);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    if (b.seriesId) {
+      const s = (await client.query('SELECT status FROM series WHERE id=$1', [b.seriesId])).rows[0];
+      if (!s) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'series not found' }); }
+      if (s.status !== 'active') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'series finished' }); }
+    }
     const pset = new Set((await client.query('SELECT id FROM players')).rows.map(r => r.id));
     const g = (await client.query(
       `INSERT INTO games (series_id, status, target_balls, final_scores, winner_player_id, points_leader_player_id, created_by_sub)
@@ -847,10 +880,73 @@ app.put('/api/games/:id/score', requireAuth, async (req, res) => {
     client.release();
   }
 });
+app.post('/api/games/:id/finish', requireAuth, async (req, res) => {
+  const id = req.params.id;
+  const force = !!req.body.force;
+  const mutationId = typeof req.body.mutationId === 'string' ? req.body.mutationId : null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const row = (await client.query('SELECT id, status FROM games WHERE id=$1 FOR UPDATE', [id])).rows[0];
+    if (!row) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
+    if (!await canFinishGame(client, req.session.user, id)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'forbidden' });
+    }
+    if (row.status === 'finished') {
+      await client.query('COMMIT');
+      return res.json(await loadGameForUser(id, req.session.user));
+    }
+
+    const game = await loadGameFromDb(client, id);
+    const st = computeServerGameState(game);
+    const winner = st.firstWinner || (force ? serverBallsLeader(game, st.scores) : null);
+    await client.query(
+      `UPDATE games
+          SET status='finished',
+              finished_at=COALESCE(finished_at, now()),
+              final_scores=$2::jsonb,
+              winner_player_id=$3,
+              points_leader_player_id=$4
+        WHERE id=$1`,
+      [id, JSON.stringify(st.scores), winner ? winner.id : null, st.pointsLeader ? st.pointsLeader.id : null]
+    );
+
+    await client.query('COMMIT');
+    broadcast({ type: 'gameUpdated', gameId: id, ...(mutationId ? { mutationId } : {}) });
+    broadcast({ type: 'activeChanged' });
+    res.json(await loadGameForUser(id, req.session.user));
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(e.statusCode || 500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
 app.delete('/api/games/:id', requireAuth, async (req, res) => {
-  await pool.query('DELETE FROM games WHERE id=$1', [req.params.id]);
-  broadcast({ type: 'activeChanged' });
-  res.status(204).end();
+  const id = req.params.id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const row = (await client.query('SELECT id FROM games WHERE id=$1 FOR UPDATE', [id])).rows[0];
+    if (!row) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
+    if (!await canEditGameScore(client, req.session.user, id)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'forbidden' });
+    }
+    await client.query('DELETE FROM game_events WHERE game_id=$1', [id]);
+    await client.query('DELETE FROM game_players WHERE game_id=$1', [id]);
+    await client.query('DELETE FROM games WHERE id=$1', [id]);
+    await client.query('COMMIT');
+    broadcast({ type: 'gameUpdated', gameId: id });
+    broadcast({ type: 'activeChanged' });
+    res.status(204).end();
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(e.statusCode || 500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
 });
 
 // append одного события (real-time нажатие). Право: игрок запросившего в составе игры.
@@ -1255,5 +1351,10 @@ initOidc().then(async () => {
   await initOwnershipSchema();
   await initPokerSchema();
   await runStartupDataRepairs();
+  await autoFinishExpiredSeries();
+  const seriesDurationTimer = setInterval(() => {
+    autoFinishExpiredSeries(pool, true).catch((e) => console.error('Series auto-finish failed:', e.message));
+  }, SERIES_AUTO_FINISH_INTERVAL_MS);
+  if (seriesDurationTimer.unref) seriesDurationTimer.unref();
   server.listen(PORT, () => console.log(`Ташкент v2 на :${PORT}`));
 }).catch(e => { console.error('OIDC init failed:', e); process.exit(1); });
