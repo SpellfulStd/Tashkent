@@ -86,8 +86,151 @@ const sessionMiddleware = session({
 });
 app.use(sessionMiddleware);
 
-const requireAuth = (req, res, next) =>
-  req.session.user ? next() : res.status(401).json({ error: 'unauthorized' });
+const AUTH_REFRESH_SKEW_SECONDS = 30;
+const sessionRefreshes = new Map();
+
+function decodeJwtPayload(token) {
+  if (!token || typeof token !== 'string') return null;
+  const part = token.split('.')[1];
+  if (!part) return null;
+  try {
+    const padded = part.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(part.length / 4) * 4, '=');
+    return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function claimsFromTokenSet(tokenSet) {
+  try {
+    return tokenSet.claims();
+  } catch {
+    return decodeJwtPayload(tokenSet && tokenSet.id_token);
+  }
+}
+
+function tokenExpiresAt(tokenSet, claims = null) {
+  const exp = Number(tokenSet && tokenSet.expires_at) || Number(claims && claims.exp);
+  if (Number.isFinite(exp) && exp > 0) return exp;
+  const jwtClaims = decodeJwtPayload(tokenSet && tokenSet.id_token);
+  const jwtExp = Number(jwtClaims && jwtClaims.exp);
+  return Number.isFinite(jwtExp) && jwtExp > 0 ? jwtExp : null;
+}
+
+function buildSessionAuth(tokenSet, fallback = {}) {
+  const claims = claimsFromTokenSet(tokenSet) || {};
+  return {
+    user: {
+      sub: claims.sub || fallback.user?.sub,
+      username: claims.preferred_username || fallback.user?.username,
+      email: claims.email || fallback.user?.email,
+      name: claims.name || fallback.user?.name,
+    },
+    idToken: tokenSet.id_token || fallback.idToken,
+    refreshToken: tokenSet.refresh_token || fallback.refreshToken,
+    tokenExpiresAt: tokenExpiresAt(tokenSet, claims),
+  };
+}
+
+function applySessionAuth(sess, auth) {
+  if (!auth.user.sub) return false;
+  sess.user = auth.user;
+  if (auth.idToken) sess.idToken = auth.idToken;
+  else delete sess.idToken;
+  if (auth.refreshToken) sess.refreshToken = auth.refreshToken;
+  else delete sess.refreshToken;
+  if (auth.tokenExpiresAt) sess.tokenExpiresAt = auth.tokenExpiresAt;
+  else delete sess.tokenExpiresAt;
+  return true;
+}
+
+function sessionTokenExpiresAt(sess) {
+  const exp = Number(sess && sess.tokenExpiresAt);
+  if (Number.isFinite(exp) && exp > 0) return exp;
+  const claims = decodeJwtPayload(sess && sess.idToken);
+  const jwtExp = Number(claims && claims.exp);
+  return Number.isFinite(jwtExp) && jwtExp > 0 ? jwtExp : null;
+}
+
+function sessionTokenIsFresh(sess) {
+  const exp = sessionTokenExpiresAt(sess);
+  if (!exp) return false;
+  return exp > Math.floor(Date.now() / 1000) + AUTH_REFRESH_SKEW_SECONDS;
+}
+
+function clearSessionAuth(sess) {
+  if (!sess) return;
+  delete sess.user;
+  delete sess.idToken;
+  delete sess.refreshToken;
+  delete sess.tokenExpiresAt;
+}
+
+function saveSession(req) {
+  return new Promise((resolve) => {
+    if (!req.session) return resolve(false);
+    req.session.save((err) => {
+      if (err) console.error('Session save failed:', err.message);
+      resolve(!err);
+    });
+  });
+}
+
+function destroySession(req) {
+  return new Promise((resolve) => {
+    if (!req.session) return resolve();
+    req.session.destroy((err) => {
+      if (err) console.error('Session destroy failed:', err.message);
+      resolve();
+    });
+  });
+}
+
+async function refreshSessionAuth(req) {
+  const sess = req.session;
+  if (!sess || !sess.refreshToken || !oidc) return false;
+  const key = req.sessionID || sess.id || sess.refreshToken;
+  const fallback = { user: sess.user, idToken: sess.idToken, refreshToken: sess.refreshToken };
+  if (!sessionRefreshes.has(key)) {
+    sessionRefreshes.set(key, oidc.refresh(sess.refreshToken)
+      .then((tokenSet) => buildSessionAuth(tokenSet, fallback))
+      .finally(() => sessionRefreshes.delete(key)));
+  }
+  const auth = await sessionRefreshes.get(key);
+  if (!applySessionAuth(sess, auth) || !sessionTokenIsFresh(sess)) return false;
+  await saveSession(req);
+  return true;
+}
+
+async function sessionUser(req, destroyOnFailure = true) {
+  const sess = req.session;
+  if (!sess || !sess.user) return null;
+  if (sessionTokenIsFresh(sess)) {
+    const exp = sessionTokenExpiresAt(sess);
+    if (exp && !sess.tokenExpiresAt) {
+      sess.tokenExpiresAt = exp;
+      await saveSession(req);
+    }
+    return sess.user;
+  }
+  try {
+    if (await refreshSessionAuth(req)) return req.session.user;
+  } catch (e) {
+    console.warn('OIDC refresh failed:', e.message);
+  }
+  if (destroyOnFailure) await destroySession(req);
+  else {
+    clearSessionAuth(sess);
+    await saveSession(req);
+  }
+  return null;
+}
+
+const requireAuth = async (req, res, next) => {
+  const user = await sessionUser(req);
+  if (!user) return res.status(401).json({ error: 'unauthorized' });
+  next();
+};
 
 // ---- WebSocket (real-time): уведомляем клиентов, они перезапрашивают ----
 const clients = new Set();
@@ -108,30 +251,30 @@ function startOidc(req, res, registration = false) {
 }
 
 // сразу на форму входа Keycloak, без промежуточной страницы
-app.get('/login', (req, res) => {
-  if (req.session.user) return res.redirect('/');
+app.get('/login', async (req, res) => {
+  if (await sessionUser(req, false)) return res.redirect('/');
   startOidc(req, res);
 });
 
 // сразу на форму регистрации Keycloak (endpoint /registrations)
-app.get('/register', (req, res) => {
-  if (req.session.user) return res.redirect('/');
+app.get('/register', async (req, res) => {
+  if (await sessionUser(req, false)) return res.redirect('/');
   startOidc(req, res, true);
 });
 
-app.get('/auth/login', (req, res) => {
-  if (req.session.user) return res.redirect('/');
+app.get('/auth/login', async (req, res) => {
+  if (await sessionUser(req, false)) return res.redirect('/');
   startOidc(req, res);
 });
 
 // сразу на форму регистрации Keycloak (endpoint /registrations)
-app.get('/auth/register', (req, res) => {
-  if (req.session.user) return res.redirect('/');
+app.get('/auth/register', async (req, res) => {
+  if (await sessionUser(req, false)) return res.redirect('/');
   startOidc(req, res, true);
 });
 
-app.get('/landing.html', (req, res) => {
-  if (req.session.user) return res.redirect('/');
+app.get('/landing.html', async (req, res) => {
+  if (await sessionUser(req, false)) return res.redirect('/');
   res.sendFile(path.join(PUBLIC, 'landing.html'));
 });
 
@@ -140,9 +283,9 @@ app.get('/callback', async (req, res) => {
     const params = oidc.callbackParams(req);
     const { state, nonce } = req.session.oidc || {};
     const tokenSet = await oidc.callback(process.env.OIDC_REDIRECT_URI, params, { state, nonce });
-    const c = tokenSet.claims();
-    req.session.user = { sub: c.sub, username: c.preferred_username, email: c.email, name: c.name };
-    req.session.idToken = tokenSet.id_token;
+    const c = claimsFromTokenSet(tokenSet) || {};
+    if (!c.sub) throw new Error('OIDC token has no subject');
+    applySessionAuth(req.session, buildSessionAuth(tokenSet));
     delete req.session.oidc;
     await pool.query(
       `INSERT INTO accounts (sub, username, email, last_login) VALUES ($1,$2,$3, now())
@@ -169,8 +312,9 @@ app.get('/logout', (req, res) => {
   });
 });
 
-app.get('/', (req, res) => {
-  res.sendFile(path.join(PUBLIC, req.session.user ? 'index.html' : 'landing.html'));
+app.get('/', async (req, res) => {
+  const user = await sessionUser(req, false);
+  res.sendFile(path.join(PUBLIC, user ? 'index.html' : 'landing.html'));
 });
 
 // ---- helpers ----
@@ -988,8 +1132,11 @@ app.post('/api/players/:id/merge', requireAuth, async (req, res) => {
 });
 
 // ---- Админ-чат (codex-агент, только spellful). Задачи в очередь admin_tasks, их выполняет хост-воркер. ----
-const requireAdmin = (req, res, next) =>
-  (req.session.user && isAdmin(req.session.user)) ? next() : res.status(403).json({ error: 'forbidden' });
+const requireAdmin = async (req, res, next) => {
+  const user = await sessionUser(req);
+  if (!user) return res.status(401).json({ error: 'unauthorized' });
+  return isAdmin(user) ? next() : res.status(403).json({ error: 'forbidden' });
+};
 
 app.get('/api/admin/uploads/:file', requireAdmin, (req, res) => {
   const file = req.params.file;
@@ -1293,8 +1440,15 @@ server.on('upgrade', (req, socket, head) => {
     });
     return;
   }
-  sessionMiddleware(req, {}, () => {
-    if (!req.session || !req.session.user) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
+  sessionMiddleware(req, {}, async () => {
+    try {
+      if (!await sessionUser(req)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
+    } catch (e) {
+      console.error('WebSocket auth failed:', e.message);
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
       clients.add(ws);
       ws.on('close', () => clients.delete(ws));
